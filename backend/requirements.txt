@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+python-pptx
+beautifulsoup4
+requests
