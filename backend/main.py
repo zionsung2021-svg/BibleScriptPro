@@ -24,7 +24,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_PATH = "bible.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "bible.db")
 
 # 66권 전체 약어 및 별칭 -> 표준 공식 명칭 매핑 테이블
 BIBLE_NAME_MAP = {
@@ -287,9 +288,14 @@ def generate_ppt(
         }
     )
 
-# --- [정적 파일 서빙] ---
+# --- [정적 파일 서빙 부분 전체 교체 (500 에러 절대 방지 코드)] ---
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi import HTTPException
+import traceback
+import os
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# 프로젝트 루트 디렉토리 (backend의 부모 폴더 또는 현재 폴더)
 PARENT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 
 search_dirs = [
@@ -317,14 +323,20 @@ if dist_dir:
             raise HTTPException(status_code=404, detail="Not Found")
         
         target = os.path.join(dist_dir, full_path)
-        if full_path and os.path.exists(target) and os.path.isfile(target):
-            return FileResponse(target)
-        return FileResponse(os.path.join(dist_dir, "index.html"))
+        try:
+            # 에셋 파일 요청 시
+            if full_path and os.path.exists(target) and os.path.isfile(target):
+                return FileResponse(target)
+            
+            # 메인 화면 접속 시 (aiofiles 오류를 피하기 위해 직접 읽어서 반환)
+            index_file = os.path.join(dist_dir, "index.html")
+            with open(index_file, "r", encoding="utf-8") as f:
+                return HTMLResponse(content=f.read())
+                
+        except Exception as e:
+            # 500 에러 대신 화면에 에러 원인을 직접 출력
+            return HTMLResponse(content=f"<h1>Error Occurred</h1><pre>{traceback.format_exc()}</pre>")
 else:
     @app.get("/")
     def fallback():
-        return {
-            "status": "online",
-            "message": "Frontend build not found.",
-            "searched": search_dirs
-        }
+        return {"status": "error", "message": "Frontend build not found.", "searched": search_dirs}
