@@ -286,25 +286,23 @@ def generate_ppt(
         }
     )
 
-# --- [맨 아래 정적 파일 서빙 부분 최종 보강] ---
-
+# --- [정적 파일 서빙] ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-current_dir = os.path.abspath(os.getcwd())
+# 프로젝트 루트 디렉토리 (backend의 부모 폴더 또는 현재 폴더)
+PARENT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 
-# Render 및 로컬의 모든 가능한 dist 폴더 위치를 순서대로 탐색
-search_paths = [
-    os.path.join(current_dir, "frontend", "dist"),
-    os.path.join(BASE_DIR, "..", "frontend", "dist"),
+search_dirs = [
+    os.path.join(PARENT_DIR, "frontend", "dist"),
     os.path.join(BASE_DIR, "frontend", "dist"),
-    os.path.join(current_dir, "dist"),
+    os.path.join(os.getcwd(), "frontend", "dist"),
+    os.path.join(os.getcwd(), "dist"),
     os.path.join(BASE_DIR, "dist")
 ]
 
 dist_dir = None
-for p in search_paths:
-    candidate = os.path.abspath(p)
-    if os.path.exists(candidate) and os.path.exists(os.path.join(candidate, "index.html")):
-        dist_dir = candidate
+for path in search_dirs:
+    if os.path.exists(os.path.join(path, "index.html")):
+        dist_dir = path
         break
 
 if dist_dir:
@@ -314,19 +312,18 @@ if dist_dir:
 
     @app.get("/{full_path:path}")
     def serve_frontend(full_path: str):
-        if full_path.startswith("api/") or full_path == "docs" or full_path == "openapi.json":
-            raise HTTPException(status_code=404, detail="API endpoint not found")
+        if full_path.startswith("api/") or full_path in ["docs", "openapi.json"]:
+            raise HTTPException(status_code=404, detail="Not Found")
         
-        target_file = os.path.join(dist_dir, full_path)
-        if full_path and os.path.exists(target_file) and os.path.isfile(target_file):
-            return FileResponse(target_file)
+        target = os.path.join(dist_dir, full_path)
+        if full_path and os.path.exists(target) and os.path.isfile(target):
+            return FileResponse(target)
         return FileResponse(os.path.join(dist_dir, "index.html"))
 else:
     @app.get("/")
-    def index_fallback():
+    def fallback():
         return {
             "status": "online",
             "message": "Frontend build not found.",
-            "current_dir": current_dir,
-            "searched_paths": [os.path.abspath(p) for p in search_paths]
+            "searched": search_dirs
         }
