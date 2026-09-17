@@ -285,3 +285,43 @@ def generate_ppt(
             "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
         }
     )
+
+# --- [맨 아래 정적 파일 서빙 부분 수정] ---
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 1순위: backend 기준 상위 frontend/dist, 2순위: 현재 작업 디렉토리 기준 frontend/dist
+possible_dist_paths = [
+    os.path.join(BASE_DIR, "../frontend/dist"),
+    os.path.join(os.getcwd(), "frontend/dist"),
+    os.path.join(BASE_DIR, "frontend/dist")
+]
+
+dist_dir = None
+for p in possible_dist_paths:
+    if os.path.exists(p) and os.path.exists(os.path.join(p, "index.html")):
+        dist_dir = os.path.abspath(p)
+        break
+
+if dist_dir:
+    assets_dir = os.path.join(dist_dir, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/{full_path:path}")
+    def serve_frontend(full_path: str):
+        # API 경로는 가로채지 않음
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="API endpoint not found")
+        
+        file_path = os.path.join(dist_dir, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(dist_dir, "index.html"))
+else:
+    @app.get("/")
+    def index_fallback():
+        return {
+            "status": "online",
+            "message": "BibleScript API is running. Frontend build not found.",
+            "docs": "/docs"
+        }
