@@ -254,7 +254,7 @@ def generate_ppt(
         p_title = tf_title.paragraphs[0]
         p_title.text = f"{canonical_book} {chapter}{unit} {v['verse_num']}절"
         p_title.alignment = PP_ALIGN.CENTER
-        set_korean_font(p_title, actual_font_family, 46, title_color, is_bold=True)
+        set_korean_font(p_title, actual_font_family, 54, title_color, is_bold=True)  # 크기 54pt 지정
 
         # 2. 중앙 본문
         content_box = slide.shapes.add_textbox(Inches(0.8), Inches(1.85), Inches(11.733), Inches(4.8))
@@ -263,6 +263,10 @@ def generate_ppt(
         p_content = tf_content.paragraphs[0]
         p_content.text = v["text"]
         p_content.alignment = PP_ALIGN.CENTER
+
+        # 글자 수에 따른 자동 크기 변동 로직을 제거하고 54pt 및 1.2배 적용
+        set_korean_font(p_content, actual_font_family, 54, body_color, is_bold=is_bold)  # 본문 크기 54pt 지정
+        p_content.line_spacing = 1.2  # 줄 간격 1.2배 설정
 
         if text_length > 100:
             font_size = 36
