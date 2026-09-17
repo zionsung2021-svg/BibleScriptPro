@@ -17,7 +17,7 @@ export default function App() {
   const handleSearch = async () => {
     setLoading(true)
     try {
-      let url = `http://${window.location.hostname}:8000/api/search?book=${encodeURIComponent(book)}&chapter=${chapter}`
+      let url = `/api/search?book=${encodeURIComponent(book)}&chapter=${chapter}`
       if (!isAllVerses) {
         if (startVerse) url += `&start_verse=${startVerse}`
         if (endVerse) url += `&end_verse=${endVerse}`
@@ -42,7 +42,7 @@ export default function App() {
   }
 
   const handleDownloadPPT = () => {
-    let downloadUrl = `http://localhost:8000/api/generate-ppt?book=${encodeURIComponent(book)}&chapter=${chapter}&version=${encodeURIComponent(version)}&font_name=${encodeURIComponent(fontName)}`
+    let downloadUrl = `/api/generate-ppt?book=${encodeURIComponent(book)}&chapter=${chapter}&version=${encodeURIComponent(version)}&font_name=${encodeURIComponent(fontName)}`
     if (!isAllVerses) {
       if (startVerse) downloadUrl += `&start_verse=${startVerse}`
       if (endVerse) downloadUrl += `&end_verse=${endVerse}`
