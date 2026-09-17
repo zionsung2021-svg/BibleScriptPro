@@ -5,6 +5,7 @@ import os
 from typing import Optional
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pptx import Presentation
 from pptx.util import Inches, Pt
