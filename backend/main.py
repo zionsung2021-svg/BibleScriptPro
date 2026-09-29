@@ -1,20 +1,24 @@
+# backend/main.py
 import io
+import os
+import sys
+import tempfile
 import urllib.parse
 import sqlite3
-import os
-from typing import Optional
+import threading
+import time
+from typing import Optional, List
 from fastapi import FastAPI, Query, HTTPException
-from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse, FileResponse
+from pydantic import BaseModel
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
-from pptx.oxml import parse_xml
-from pptx.oxml.ns import nsdecls
 
-app = FastAPI(title="BibleScript API")
+app = FastAPI(title="BibleScript Pro API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,323 +28,323 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "bible.db")
+# PyInstaller 번들 경로 및 로컬 경로 자동 탐색
+if getattr(sys, 'frozen', False):
+    BASE_DIR = sys._MEIPASS
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 66권 전체 약어 및 별칭 -> 표준 공식 명칭 매핑 테이블
-BIBLE_NAME_MAP = {
-    # 구약 (39권)
-    "창": "창세기", "창세": "창세기", "창세기": "창세기",
-    "출": "출애굽기", "출애": "출애굽기", "출애굽기": "출애굽기",
-    "레": "레위기", "레위": "레위기", "레위기": "레위기",
-    "민": "민수기", "민수": "민수기", "민수기": "민수기",
-    "신": "신명기", "신명": "신명기", "신명기": "신명기",
-    "수": "여호수아", "여호": "여호수아", "여호수아": "여호수아",
-    "삿": "사사기", "사사": "사사기", "사사기": "사사기",
-    "룻": "룻기", "룻기": "룻기",
-    "삼상": "사무엘상", "사무엘상": "사무엘상",
-    "삼하": "사무엘하", "사무엘하": "사무엘하",
-    "왕상": "열왕기상", "열왕기상": "열왕기상",
-    "왕하": "열왕기하", "열왕기하": "열왕기하",
-    "대상": "역대상", "역대상": "역대상",
-    "대하": "역대하", "역대하": "역대하",
-    "스": "에스라", "에스라": "에스라",
-    "느": "느헤미야", "느헤": "느헤미야", "느헤미야": "느헤미야",
-    "에": "에스더", "에스더": "에스더",
-    "욥": "욥기", "욥기": "욥기",
-    "시": "시편", "시편": "시편",
-    "잠": "잠언", "잠언": "잠언",
-    "전": "전도서", "전도": "전도서", "전도서": "전도서",
-    "아": "아가", "아가": "아가", "아가서": "아가",
-    "사": "이사야", "이사": "이사야", "이사야": "이사야",
-    "렘": "예레미야", "예레": "예레미야", "예레미야": "예레미야",
-    "애": "예레미야애가", "애가": "예레미야애가", "예레미야애가": "예레미야애가",
-    "겔": "에스겔", "에스겔": "에스겔",
-    "단": "다니엘", "다니": "다니엘", "다니엘": "다니엘",
-    "호": "호세아", "호세": "호세아", "호세아": "호세아",
-    "욜": "요엘", "요엘": "요엘",
-    "암": "아모스", "아모": "아모스", "아모스": "아모스",
-    "옵": "오바댜", "오바": "오바댜", "오바댜": "오바댜",
-    "욘": "요나", "요나": "요나",
-    "미": "미가", "미가": "미가",
-    "나": "나훔", "나훔": "나훔",
-    "합": "하박국", "하박": "하박국", "하박국": "하박국",
-    "습": "스바냐", "스바": "스바냐", "스바냐": "스바냐",
-    "학": "학개", "학개": "학개",
-    "슥": "스가랴", "스가": "스가랴", "스가랴": "스가랴",
-    "말": "말라기", "말라": "말라기", "말라기": "말라기",
+possible_paths = [
+    os.path.join(BASE_DIR, "backend", "bible.db"),
+    os.path.join(BASE_DIR, "bible.db"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "bible.db"),
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "bible.db"),
+]
 
-    # 신약 (27권)
-    "마": "마태복음", "마태": "마태복음", "마태복음": "마태복음",
-    "막": "마가복음", "마가": "마가복음", "마가복음": "마가복음",
-    "눅": "누가복음", "누가": "누가복음", "누가복음": "누가복음",
-    "요": "요한복음", "요한": "요한복음", "요한복음": "요한복음",
-    "행": "사도행전", "사도": "사도행전", "사도행전": "사도행전",
-    "롬": "로마서", "로마": "로마서", "로마서": "로마서",
-    "고전": "고린도전서", "고린도전서": "고린도전서",
-    "고후": "고린도후서", "고린도후서": "고린도후서",
-    "갈": "갈라디아서", "갈라": "갈라디아서", "갈라디아서": "갈라디아서",
-    "엡": "에베소서", "에베": "에베소서", "에베소서": "에베소서",
-    "빌": "빌립보서", "빌립": "빌립보서", "빌립보서": "빌립보서",
-    "골": "골로새서", "골로": "골로새서", "골로새서": "골로새서",
-    "살전": "데살로니가전서", "데살로니가전서": "데살로니가전서",
-    "살후": "데살로니가후서", "데살로니가후서": "데살로니가후서",
-    "딤전": "디모데전서", "디모데전서": "디모데전서",
-    "딤후": "디모데후서", "디모데후서": "디모데후서",
-    "딛": "디도서", "디도": "디도서", "디도서": "디도서",
-    "몬": "빌레몬서", "빌레": "빌레몬서", "빌레몬서": "빌레몬서",
-    "히": "히브리서", "히브": "히브리서", "히브리서": "히브리서",
-    "약": "야고보서", "야고": "야고보서", "야고보서": "야고보서",
-    "벧전": "베드로전서", "베드로전서": "베드로전서",
-    "벧후": "베드로후서", "베드로후서": "베드로후서",
-    "요일": "요한일서", "요한일서": "요한일서", "요1": "요한일서",
-    "요이": "요한이서", "요한이서": "요한이서", "요2": "요한이서",
-    "요삼": "요한삼서", "요한삼서": "요한삼서", "요3": "요한삼서",
-    "유": "유다서", "유다": "유다서", "유다서": "유다서",
-    "계": "요한계시록", "계시": "요한계시록", "계시록": "요한계시록", "요한계시록": "요한계시록"
-}
+DB_PATH = None
+for p in possible_paths:
+    if os.path.exists(p):
+        DB_PATH = p
+        break
 
-def resolve_book_name(input_name: str) -> str:
-    cleaned = input_name.strip()
-    return BIBLE_NAME_MAP.get(cleaned, cleaned)
+if not DB_PATH:
+    DB_PATH = os.path.join(BASE_DIR, "backend", "bible.db")
 
-def get_unit_name(book: str) -> str:
-    return "편" if book in ["시편", "시"] else "장"
-
-def set_korean_font(paragraph, font_name: str, size_pt: int, color_rgb: RGBColor, is_bold: bool = True):
-    """한글(East Asian) 폰트가 파워포인트에서 깨지지 않도록 XML 레벨에서 설정"""
-    paragraph.font.size = Pt(size_pt)
-    paragraph.font.color.rgb = color_rgb
-    paragraph.font.bold = is_bold
-    paragraph.font.name = font_name
-
-    # 동아시아 글꼴(ea) XML 속성 강제 설정
-    for run in paragraph.runs:
-        rPr = run._r.get_or_add_rPr()
-        for ea in rPr.findall('{http://schemas.openxmlformats.org/drawingml/2006/main}ea'):
-            rPr.remove(ea)
-        ea_xml = parse_xml(f'<a:ea {nsdecls("a")} typeface="{font_name}"/>')
-        rPr.append(ea_xml)
-
-def get_bible_verses_from_db(book: str, chapter: int, start_v: Optional[int], end_v: Optional[int]):
-    if not os.path.exists(DB_PATH):
-        raise HTTPException(
-            status_code=500,
-            detail="데이터베이스(bible.db)가 존재하지 않습니다."
-        )
-
-    canonical_book = resolve_book_name(book)
-    unit = get_unit_name(canonical_book)
-
+def get_db():
     conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
+    conn.row_factory = sqlite3.Row
+    return conn
 
-    actual_start = start_v if (start_v is not None and start_v > 0) else 1
 
-    if end_v is None or end_v <= 0:
-        cur.execute(
-            "SELECT MAX(verse) FROM bible WHERE book = ? AND chapter = ?",
-            (canonical_book, chapter)
-        )
-        max_row = cur.fetchone()
-        if not max_row or max_row[0] is None:
-            conn.close()
-            raise HTTPException(
-                status_code=404,
-                detail=f"'{book}'({canonical_book}) {chapter}{unit} 본문을 DB에서 찾을 수 없습니다."
-            )
-        actual_end = max_row[0]
-    else:
-        actual_end = end_v
+# ==================== 프레젠테이션 생성 엔진 ====================
 
-    cur.execute(
-        """
-        SELECT verse, content FROM bible 
-        WHERE book = ? AND chapter = ? AND verse BETWEEN ? AND ? 
-        ORDER BY verse ASC
-        """,
-        (canonical_book, chapter, actual_start, actual_end)
-    )
-    rows = cur.fetchall()
-    conn.close()
-
-    if not rows:
-        raise HTTPException(
-            status_code=404,
-            detail=f"{canonical_book} {chapter}{unit} {actual_start}~{actual_end}절 본문을 찾을 수 없습니다."
-        )
-
-    return [{"verse_num": r[0], "text": r[1]} for r in rows], canonical_book, unit, actual_start, actual_end
-
-@app.get("/api/search")
-def search_bible(
-    book: str = Query(..., description="성경 이름 또는 약어 (예: 창, 시, 롬)"),
-    chapter: int = Query(..., ge=1),
-    start_verse: Optional[int] = Query(None),
-    end_verse: Optional[int] = Query(None),
-    version: str = Query("개역개정")
-):
-    verses, canonical_book, unit, start_v, end_v = get_bible_verses_from_db(book, chapter, start_verse, end_verse)
-    formatted = "\n\n".join([f"[{canonical_book} {chapter}{unit} {v['verse_num']}절]\n{v['text']}" for v in verses])
-    return {
-        "book": canonical_book,
-        "input_book": book,
-        "chapter": chapter,
-        "unit": unit,
-        "start_verse": start_v,
-        "end_verse": end_v,
-        "total_verses": len(verses),
-        "reference": f"{canonical_book} {chapter}{unit} {start_v}~{end_v}절",
-        "verses": verses,
-        "text": formatted
-    }
-
-@app.get("/api/generate-ppt")
-def generate_ppt(
-    book: str = Query(...),
-    chapter: int = Query(..., ge=1),
-    start_verse: Optional[int] = Query(None),
-    end_verse: Optional[int] = Query(None),
-    version: str = Query("개역개정"),
-    font_name: str = Query("경기천년제목 Bold")
-):
-    verses, canonical_book, unit, start_v, end_v = get_bible_verses_from_db(book, chapter, start_verse, end_verse)
-
+def build_presentation(verses_by_version: dict, canonical_book: str, chapter: int, unit: str, font_name: str, versions: List[str]):
     prs = Presentation()
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
     blank_layout = prs.slide_layouts[6]
 
-    bg_color = RGBColor(0, 32, 96)       # Navy Blue
-    title_color = RGBColor(255, 192, 0)  # Gold Yellow
-    body_color = RGBColor(255, 255, 255) # Pure White
+    bg_color = RGBColor(0, 32, 96)          # Deep Navy Blue
+    title_color = RGBColor(255, 192, 0)     # Gold Yellow
+    body_color = RGBColor(255, 255, 255)    # White
+    label_color = RGBColor(200, 225, 255)   # Light Sky Blue
 
-    # 폰트명 및 가중치 매핑
-    is_bold = True
-    actual_font_family = font_name
+    is_bold = not any(w in font_name for w in ["Regular", "Light", "Medium"])
+    num_versions = len(versions)
+    base_version = versions[0]
+    base_verses = verses_by_version.get(base_version, [])
 
-    if font_name == "경기천년바탕 Bold":
-        actual_font_family = "경기천년바탕 Bold"
-        is_bold = True
-    elif font_name == "경기천년바탕 Regular":
-        actual_font_family = "경기천년바탕 Regular"
-        is_bold = False
-    elif font_name == "경기천년제목 Bold":
-        actual_font_family = "경기천년제목 Bold"
-        is_bold = True
-    elif font_name == "경기천년제목 Light":
-        actual_font_family = "경기천년제목 Light"
-        is_bold = False
-    elif font_name == "경기천년제목 Medium":
-        actual_font_family = "경기천년제목 Medium"
-        is_bold = False
-    elif font_name == "경기천년제목V Bold":
-        actual_font_family = "경기천년제목V Bold"
-        is_bold = True
+    for v in base_verses:
+        verse_num = v["verse_num"]
 
-    for v in verses:
-        slide = prs.slides.add_slide(blank_layout)
-        background = slide.background
-        fill = background.fill
-        fill.solid()
-        fill.fore_color.rgb = bg_color
+        # ---------------- 1개 단일 번역본 (54pt 대형 뷰) ----------------
+        if num_versions == 1:
+            chunks = split_verse_text(v["text"], max_chars=65)
+            for chunk in chunks:
+                slide = prs.slides.add_slide(blank_layout)
+                slide.background.fill.solid()
+                slide.background.fill.fore_color.rgb = bg_color
 
-        text_length = len(v["text"])
+                # 상단 제목 (54pt)
+                title_box = slide.shapes.add_textbox(Inches(1.0), Inches(0.6), Inches(11.333), Inches(1.1))
+                tf_title = title_box.text_frame
+                tf_title.word_wrap = True
+                p_title = tf_title.paragraphs[0]
+                p_title.text = f"{canonical_book} {chapter}{unit} {verse_num}절"
+                p_title.alignment = PP_ALIGN.CENTER
+                set_korean_font(p_title, font_name, 54, title_color, is_bold=True)
 
-        # 1. 상단 중앙 장/절 제목
-        title_box = slide.shapes.add_textbox(Inches(1.0), Inches(0.6), Inches(11.333), Inches(1.1))
-        tf_title = title_box.text_frame
-        tf_title.word_wrap = True
-        p_title = tf_title.paragraphs[0]
-        p_title.text = f"{canonical_book} {chapter}{unit} {v['verse_num']}절"
-        p_title.alignment = PP_ALIGN.CENTER
-        set_korean_font(p_title, actual_font_family, 54, title_color, is_bold=True)  # 크기 54pt 지정
+                # 중앙 본문 (54pt, 1.2배 줄간격)
+                content_box = slide.shapes.add_textbox(Inches(0.8), Inches(1.85), Inches(11.733), Inches(4.8))
+                tf_content = content_box.text_frame
+                tf_content.word_wrap = True
+                p_content = tf_content.paragraphs[0]
+                p_content.text = chunk
+                p_content.alignment = PP_ALIGN.CENTER
+                p_content.line_spacing = 1.2
+                set_korean_font(p_content, font_name, 54, body_color, is_bold=is_bold)
 
-        # 2. 중앙 본문
-        content_box = slide.shapes.add_textbox(Inches(0.8), Inches(1.85), Inches(11.733), Inches(4.8))
-        tf_content = content_box.text_frame
-        tf_content.word_wrap = True
-        p_content = tf_content.paragraphs[0]
-        p_content.text = v["text"]
-        p_content.alignment = PP_ALIGN.CENTER
+        # ---------------- 2개 번역본 비교 (좌우 2단 분할 뷰) ----------------
+        elif num_versions == 2:
+            slide = prs.slides.add_slide(blank_layout)
+            slide.background.fill.solid()
+            slide.background.fill.fore_color.rgb = bg_color
 
-        # 글자 수에 따른 자동 크기 변동 로직을 제거하고 54pt 및 1.2배 적용
-        set_korean_font(p_content, actual_font_family, 54, body_color, is_bold=is_bold)  # 본문 크기 54pt 지정
-        p_content.line_spacing = 1.2  # 줄 간격 1.2배 설정
+            # 상단 제목 (48pt)
+            title_box = slide.shapes.add_textbox(Inches(1.0), Inches(0.4), Inches(11.333), Inches(0.9))
+            tf_title = title_box.text_frame
+            tf_title.word_wrap = True
+            p_title = tf_title.paragraphs[0]
+            p_title.text = f"{canonical_book} {chapter}{unit} {verse_num}절"
+            p_title.alignment = PP_ALIGN.CENTER
+            set_korean_font(p_title, font_name, 48, title_color, is_bold=True)
 
-        if text_length > 100:
-            font_size = 36
-        elif text_length > 55:
-            font_size = 42
+            col_width = Inches(5.6)
+            gap = Inches(0.533)
+            left_margin = Inches(0.8)
+            top_content = Inches(1.5)
+            content_height = Inches(5.3)
+
+            for idx, ver in enumerate(versions):
+                col_left = left_margin + idx * (col_width + gap)
+                ver_verse = next((item for item in verses_by_version.get(ver, []) if item["verse_num"] == verse_num), None)
+                ver_text = ver_verse["text"] if ver_verse else ""
+
+                box = slide.shapes.add_textbox(col_left, top_content, col_width, content_height)
+                tf = box.text_frame
+                tf.word_wrap = True
+
+                # 번역본 라벨
+                p_label = tf.paragraphs[0]
+                p_label.text = f"[{ver}]"
+                set_korean_font(p_label, font_name, 28, label_color, is_bold=True)
+
+                # 본문 내용 (36pt, 1.25줄간격)
+                p_body = tf.add_paragraph()
+                p_body.text = ver_text
+                p_body.line_spacing = 1.25
+                set_korean_font(p_body, font_name, 36, body_color, is_bold=is_bold)
+
+        # ---------------- 3개 이상 번역본 (다단 균등 분할 뷰) ----------------
         else:
-            font_size = 48
+            slide = prs.slides.add_slide(blank_layout)
+            slide.background.fill.solid()
+            slide.background.fill.fore_color.rgb = bg_color
 
-        set_korean_font(p_content, actual_font_family, font_size, body_color, is_bold=is_bold)
+            title_box = slide.shapes.add_textbox(Inches(1.0), Inches(0.4), Inches(11.333), Inches(0.9))
+            tf_title = title_box.text_frame
+            tf_title.word_wrap = True
+            p_title = tf_title.paragraphs[0]
+            p_title.text = f"{canonical_book} {chapter}{unit} {verse_num}절"
+            p_title.alignment = PP_ALIGN.CENTER
+            set_korean_font(p_title, font_name, 44, title_color, is_bold=True)
 
+            total_width = Inches(11.733)
+            gap = Inches(0.4)
+            col_width = (total_width - (gap * (num_versions - 1))) / num_versions
+            left_margin = Inches(0.8)
+
+            for idx, ver in enumerate(versions):
+                col_left = left_margin + idx * (col_width + gap)
+                ver_verse = next((item for item in verses_by_version.get(ver, []) if item["verse_num"] == verse_num), None)
+                ver_text = ver_verse["text"] if ver_verse else ""
+
+                box = slide.shapes.add_textbox(col_left, Inches(1.5), col_width, Inches(5.3))
+                tf = box.text_frame
+                tf.word_wrap = True
+
+                p_label = tf.paragraphs[0]
+                p_label.text = f"[{ver}]"
+                set_korean_font(p_label, font_name, 24, label_color, is_bold=True)
+
+                p_body = tf.add_paragraph()
+                p_body.text = ver_text
+                p_body.line_spacing = 1.2
+                body_font_size = 28 if num_versions == 3 else 22
+                set_korean_font(p_body, font_name, body_font_size, body_color, is_bold=is_bold)
+
+    return prs
+
+
+# ==================== 엔드포인트 라우팅 ====================
+
+@app.get("/api/versions")
+def get_versions():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT version FROM verses ORDER BY version ASC")
+        rows = cursor.fetchall()
+        versions = [r["version"] for r in rows]
+        return {"versions": versions if versions else ["개역개정"]}
+
+
+@app.get("/api/search-keyword")
+def search_keyword(
+    keyword: str = Query(..., min_length=2),
+    version: str = Query("개역개정"),
+    limit: int = Query(25)
+):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT version, book, chapter, verse_num, text 
+            FROM verses 
+            WHERE version = ? AND text LIKE ? 
+            LIMIT ?
+            """,
+            (version, f"%{keyword}%", limit)
+        )
+        return [dict(r) for r in cursor.fetchall()]
+
+
+class VerseUpdateRequest(BaseModel):
+    version: str = "개역개정"
+    book: str
+    chapter: int
+    verse_num: int
+    text: str
+
+@app.patch("/api/verse")
+def update_verse_db(payload: VerseUpdateRequest):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE verses 
+            SET text = ? 
+            WHERE version = ? AND book = ? AND chapter = ? AND verse_num = ?
+            """,
+            (payload.text, payload.version, payload.book, payload.chapter, payload.verse_num)
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="해당 구절을 찾을 수 없습니다.")
+    return {"status": "success", "message": f"[{payload.version}] 본문이 성공적으로 저장되었습니다."}
+
+
+@app.post("/api/shutdown")
+def shutdown_app():
+    def kill_process():
+        time.sleep(0.5)
+        os._exit(0)
+    threading.Thread(target=kill_process, daemon=True).start()
+    return {"status": "success", "message": "프로그램을 종료합니다."}
+
+
+# 로컬 / 웹 자동 분기 파워포인트 생성 API
+@app.post("/api/open-ppt")
+def create_ppt_stream_or_open(
+    book: str = Query(...),
+    chapter: int = Query(..., ge=1),
+    start_verse: Optional[int] = Query(None),
+    end_verse: Optional[int] = Query(None),
+    versions: List[str] = Query(["개역개정"]),
+    font_name: str = Query("경기천년제목 Bold")
+):
+    try:
+        # 빈 문자열("") 또는 None 방어 처리
+        s_verse = int(start_verse) if (start_verse and str(start_verse).strip().isdigit()) else None
+        e_verse = int(end_verse) if (end_verse and str(end_verse).strip().isdigit()) else None
+
+        unit = "편" if book == "시편" else "장"
+        verses_by_version = {}
+
+   with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # version 컬럼 유무 확인 (구버전/신버전 DB 호환)
+            cursor.execute("PRAGMA table_info(verses)")
+            columns = [col[1] for col in cursor.fetchall()]
+            has_version_col = "version" in columns
+
+            for ver in versions:
+                if has_version_col:
+                    query = "SELECT verse_num, text FROM verses WHERE version = ? AND book = ? AND chapter = ?"
+                    params = [ver, book, chapter]
+                else:
+                    query = "SELECT verse_num, text FROM verses WHERE book = ? AND chapter = ?"
+                    params = [book, chapter]
+
+                if s_verse and e_verse:
+                    query += " AND verse_num BETWEEN ? AND ? ORDER BY verse_num"
+                    params.extend([s_verse, e_verse])
+                elif s_verse:
+                    query += " AND verse_num = ?"
+                    params.append(s_verse)
+                else:
+                    query += " ORDER BY verse_num"
+
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                verses_by_version[ver] = [{"verse_num": r["verse_num"], "text": r["text"]} for r in rows]
+
+    base_ver = versions[0]
+    if not verses_by_version.get(base_ver):
+        raise HTTPException(status_code=404, detail="성경 본문 데이터를 찾을 수 없습니다.")
+
+    start_v = start_verse if start_verse else verses_by_version[base_ver][0]["verse_num"]
+    end_v = end_verse if end_verse else verses_by_version[base_ver][-1]["verse_num"]
+
+    prs = build_presentation(verses_by_version, book, chapter, unit, font_name, versions)
+    
+    ver_tag = "_".join(versions)
+    filename = f"{book}_{chapter}{unit}_{start_v}_{end_v}절_{ver_tag}.pptx"
+    encoded_filename = urllib.parse.quote(filename)
+
+    # [분기 1] Windows 로컬 데스크톱 (.exe 환경) ➔ 파워포인트 즉시 실행
+    if os.name == "nt":
+        temp_dir = tempfile.gettempdir()
+        file_path = os.path.join(temp_dir, filename)
+        prs.save(file_path)
+        os.startfile(file_path)
+        return {"status": "success", "mode": "local", "file_path": file_path}
+
+    # [분기 2] Render 웹 서버 (Linux 환경) ➔ 브라우저 파일 다운로드
     file_stream = io.BytesIO()
     prs.save(file_stream)
     file_stream.seek(0)
-
-    filename = f"{canonical_book}_{chapter}{unit}_{start_v}_{end_v}절.pptx"
-    encoded_filename = urllib.parse.quote(filename)
-
     return StreamingResponse(
         file_stream,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
-        }
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
     )
 
-# --- [정적 파일 서빙 부분 전체 교체 (500 에러 절대 방지 코드)] ---
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi import HTTPException
-import traceback
-import os
+except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=500, detail=f"{str(e)}\n{traceback.format_exc()}")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PARENT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
-
-search_dirs = [
-    os.path.join(PARENT_DIR, "frontend", "dist"),
-    os.path.join(BASE_DIR, "frontend", "dist"),
-    os.path.join(os.getcwd(), "frontend", "dist"),
-    os.path.join(os.getcwd(), "dist"),
-    os.path.join(BASE_DIR, "dist")
-]
-
-dist_dir = None
-for path in search_dirs:
-    if os.path.exists(os.path.join(path, "index.html")):
-        dist_dir = path
-        break
-
-if dist_dir:
-    assets_dir = os.path.join(dist_dir, "assets")
-    if os.path.exists(assets_dir):
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+# 정적 파일 마운트 (단일 exe 및 웹 배포 공용)
+FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
+if os.path.exists(FRONTEND_DIST):
+    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
 
     @app.get("/{full_path:path}")
     def serve_frontend(full_path: str):
-        if full_path.startswith("api/") or full_path in ["docs", "openapi.json"]:
-            raise HTTPException(status_code=404, detail="Not Found")
-        
-        target = os.path.join(dist_dir, full_path)
-        try:
-            # 에셋 파일 요청 시
-            if full_path and os.path.exists(target) and os.path.isfile(target):
-                return FileResponse(target)
-            
-            # 메인 화면 접속 시 (aiofiles 오류를 피하기 위해 직접 읽어서 반환)
-            index_file = os.path.join(dist_dir, "index.html")
-            with open(index_file, "r", encoding="utf-8") as f:
-                return HTMLResponse(content=f.read())
-                
-        except Exception as e:
-            # 500 에러 대신 화면에 에러 원인을 직접 출력
-            return HTMLResponse(content=f"<h1>Error Occurred</h1><pre>{traceback.format_exc()}</pre>")
-else:
-    @app.get("/")
-    def fallback():
-        return {"status": "error", "message": "Frontend build not found.", "searched": search_dirs}
+        file_path = os.path.join(FRONTEND_DIST, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+

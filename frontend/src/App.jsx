@@ -1,283 +1,397 @@
-import { useState } from 'react'
+import React, { useState, useEffect } from "react";
 
 export default function App() {
-  const [book, setBook] = useState('시편')
-  const [chapter, setChapter] = useState('23')
-  const [isAllVerses, setIsAllVerses] = useState(true)
-  const [startVerse, setStartVerse] = useState('1')
-  const [endVerse, setEndVerse] = useState('')
-  const [version, setVersion] = useState('개역개정')
-  const [fontName, setFontName] = useState('경기천년제목 Bold')
-  const [loading, setLoading] = useState(false)
-  const [versesData, setVersesData] = useState([])
-  const [activeSlideIndex, setActiveSlideIndex] = useState(0)
+  const [versions, setVersions] = useState(["개역개정"]);
+  const [selectedVersions, setSelectedVersions] = useState(["개역개정"]);
+  const [book, setBook] = useState("창세기");
+  const [chapter, setChapter] = useState(1);
+  const [startVerse, setStartVerse] = useState("");
+  const [endVerse, setEndVerse] = useState("");
+  const [fontName, setFontName] = useState("경기천년제목 Medium");
 
-  const unit = book.trim() === '시편' || book.trim() === '시' ? '편' : '장'
+  // 여러 본문 일괄 입력 상태
+  const [multiQuery, setMultiQuery] = useState("");
 
-  const handleSearch = async () => {
-    setLoading(true)
+  // 키워드 검색 상태
+  const [searchWord, setSearchWord] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
+
+  // 구절 인라인 수정 상태
+  const [editVerse, setEditVerse] = useState(null);
+  const [editText, setEditText] = useState("");
+
+  useEffect(() => {
+    fetch("/api/versions")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data && Array.isArray(data.versions) && data.versions.length > 0) {
+          setVersions(data.versions);
+        }
+      })
+      .catch(console.error);
+  }, []);
+
+  const toggleVersion = (ver) => {
+    if (selectedVersions.includes(ver)) {
+      if (selectedVersions.length === 1) return;
+      setSelectedVersions(selectedVersions.filter((v) => v !== ver));
+    } else {
+      setSelectedVersions([...selectedVersions, ver]);
+    }
+  };
+
+  // 1. 단일 본문 생성 핸들러 (안내 팝업 없이 바로 PPT 오픈)
+  const handleGeneratePpt = async () => {
     try {
-      let url = `/api/search?book=${encodeURIComponent(book)}&chapter=${chapter}`
-      if (!isAllVerses) {
-        if (startVerse) url += `&start_verse=${startVerse}`
-        if (endVerse) url += `&end_verse=${endVerse}`
+      const params = new URLSearchParams({
+        book: book.trim(),
+        chapter: String(chapter),
+        font_name: fontName,
+      });
+
+      if (startVerse && String(startVerse).trim() !== "") {
+        params.append("start_verse", String(startVerse).trim());
+      }
+      if (endVerse && String(endVerse).trim() !== "") {
+        params.append("end_verse", String(endVerse).trim());
       }
 
-      const res = await fetch(url)
-      const data = await res.json()
+      selectedVersions.forEach((v) => params.append("versions", v));
+
+      const response = await fetch(`/api/open-ppt?${params.toString()}`, { method: "POST" });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+        throw new Error(errorData?.detail || `서버 에러 (${response.status})`);
+      }
+      await response.json().catch(() => null);
+    } catch (err) {
+      alert("PPT 생성 오류: " + err.message);
+    }
+  };
+
+  // 2. 여러 본문 한 번에 연속 생성 핸들러
+  const handleGenerateMultiPpt = async () => {
+    if (!multiQuery.trim()) {
+      alert("구절을 입력해 주세요. (예: 창 1:1-3, 요 3:16, 롬 8:28)");
+      return;
+    }
+    try {
+      const res = await fetch("/api/open-multi-ppt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query_text: multiQuery,
+          versions: selectedVersions,
+          font_name: fontName,
+        }),
+      });
       if (!res.ok) {
-        alert(data.detail || '본문 조회가 실패했습니다.')
-        return
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.detail || "다중 본문 생성에 실패했습니다.");
       }
+      await res.json().catch(() => null);
+    } catch (err) {
+      alert("다중 PPT 생성 오류: " + err.message);
+    }
+  };
 
-      if (data.verses) {
-        setVersesData(data.verses)
-        setActiveSlideIndex(0)
+  // 3. 키워드 검색 핸들러
+  const handleSearch = async () => {
+    if (!searchWord || searchWord.trim().length < 2) {
+      alert("검색어를 2글자 이상 입력해 주세요.");
+      return;
+    }
+
+    setIsSearching(true);
+    try {
+      const res = await fetch(`/api/search-keyword?keyword=${encodeURIComponent(searchWord.trim())}&version=${encodeURIComponent(selectedVersions[0] || "개역개정")}`);
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => null);
+        throw new Error(errJson?.detail || `검색 오류 (${res.status})`);
+      }
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setSearchResults(data);
+        if (data.length === 0) {
+          alert("검색 결과가 없습니다.");
+        }
+      } else {
+        setSearchResults([]);
       }
     } catch (err) {
-      alert('백엔드 서버와 통신할 수 없습니다.')
+      alert("검색 실패: " + err.message);
+      setSearchResults([]);
     } finally {
-      setLoading(false)
+      setIsSearching(false);
     }
-  }
+  };
 
-  const handleDownloadPPT = () => {
-    let downloadUrl = `/api/generate-ppt?book=${encodeURIComponent(book)}&chapter=${chapter}&version=${encodeURIComponent(version)}&font_name=${encodeURIComponent(fontName)}`
-    if (!isAllVerses) {
-      if (startVerse) downloadUrl += `&start_verse=${startVerse}`
-      if (endVerse) downloadUrl += `&end_verse=${endVerse}`
+  // 4. 구절 내용 수정 핸들러
+  const handleSaveVerse = async () => {
+    if (!editVerse) return;
+    try {
+      const res = await fetch("/api/verse", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: selectedVersions[0] || "개역개정",
+          book: editVerse.book,
+          chapter: editVerse.chapter,
+          verse_num: editVerse.verse_num,
+          text: editText,
+        }),
+      });
+      if (!res.ok) throw new Error("저장에 실패했습니다.");
+      alert("성경 DB가 성공적으로 수정되었습니다!");
+      setEditVerse(null);
+      handleSearch();
+    } catch (err) {
+      alert("수정 저장 오류: " + err.message);
     }
+  };
+// 검색 결과에서 클릭한 특정 구절 즉시 PPT 열기
+  const handleQuickPpt = async (item) => {
+    try {
+      const params = new URLSearchParams({
+        book: item.book,
+        chapter: String(item.chapter),
+        start_verse: String(item.verse_num),
+        end_verse: String(item.verse_num),
+        font_name: fontName,
+      });
+      selectedVersions.forEach((v) => params.append("versions", v));
 
-    const link = document.createElement('a')
-    link.href = downloadUrl
-    link.setAttribute('download', `${book}_${chapter}${unit}.pptx`)
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-  }
-
-  // 화면 프리뷰용 폰트 패밀리 결정
-  const getPreviewFontFamily = () => {
-    if (fontName.includes('경기천년바탕')) return "'GyeonggiBatang', serif"
-    if (fontName.includes('경기천년제목V')) return "'GyeonggiTitleV', sans-serif"
-    if (fontName.includes('경기천년제목')) return "'GyeonggiTitle', sans-serif"
-    return "Pretendard, sans-serif"
-  }
-
-  const getPreviewFontWeight = () => {
-    if (fontName.includes('Light')) return '300'
-    if (fontName.includes('Regular')) return '400'
-    if (fontName.includes('Medium')) return '500'
-    return '700'
-  }
-
+      const response = await fetch(`/api/open-ppt?${params.toString()}`, { method: "POST" });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+        throw new Error(errorData?.detail || `서버 에러 (${response.status})`);
+      }
+      await response.json().catch(() => null);
+    } catch (err) {
+      alert("PPT 생성 오류: " + err.message);
+    }
+  };
+const handleShutdown = async () => {
+    try {
+      await fetch("/api/shutdown", { method: "POST" });
+    } catch (e) {
+      // 프로세스 종료로 인한 통신 단절 무시
+    }
+  };
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#0f172a', color: '#f8fafc', padding: '32px 20px', fontFamily: 'Pretendard, sans-serif' }}>
-      {/* 경기천년체 웹폰트 로드 */}
-      <style>{`
-        @import url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_one@1.0/GyeonggiBatang.woff');
-        @import url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_one@1.0/GyeonggiTitle.woff');
-        @import url('https://cdn.jsdelivr.net/gh/projectnoonnu/noonfonts_one@1.0/GyeonggiTitleV.woff');
-      `}</style>
+    <div className="min-h-screen bg-slate-900 text-slate-100 p-6 flex flex-col">
+      {/* 상단 헤더 */}
+      <header className="flex justify-between items-center mb-6 border-b border-slate-700 pb-4">
+        <div>
+          <h1 className="text-2xl font-extrabold text-amber-400 flex items-center gap-2">
+            📖 BibleScript Pro
+          </h1>
+          <p className="text-xs text-slate-400">교회 방송실 및 예배용 고화질 성경 PPT 자동 생성기</p>
+        </div>
+        <button
+          onClick={handleShutdown}
+          className="px-3 py-1.5 bg-red-900/60 hover:bg-red-800 text-red-200 border border-red-700 rounded text-xs transition"
+        >
+          프로그램 종료
+        </button>
+      </header>
 
-      <div style={{ maxWidth: '1100px', margin: '0 auto' }}>
-        
-        {/* 헤더 */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '28px', borderBottom: '1px solid #334155', paddingBottom: '20px' }}>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 flex-1">
+        {/* 좌측: 구절 및 번역본 설정 패널 */}
+        <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 space-y-4">
+          <h2 className="text-base font-bold text-amber-300">구절 및 번역본 설정</h2>
+
           <div>
-            <h1 style={{ fontSize: '24px', fontWeight: '800', color: '#38bdf8', margin: '0 0 6px 0' }}>
-              BibleScript Pro 📖
-            </h1>
-            <p style={{ fontSize: '14px', color: '#94a3b8', margin: 0 }}>
-              예배용 고화질 슬라이드 자동 생성 (경기천년체 지원)
-            </p>
-          </div>
-          <span style={{ backgroundColor: '#0369a1', color: '#e0f2fe', padding: '6px 14px', borderRadius: '20px', fontSize: '12px', fontWeight: 'bold' }}>
-            Typography Ready
-          </span>
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: '380px 1fr', gap: '28px' }}>
-          
-          {/* 컨트롤 패널 */}
-          <div style={{ backgroundColor: '#1e293b', borderRadius: '16px', padding: '24px', border: '1px solid #334155' }}>
-            <h2 style={{ fontSize: '17px', fontWeight: '700', marginBottom: '18px', color: '#e2e8f0' }}>본문 설정</h2>
-            
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginBottom: '24px' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>성경 (약어 가능)</label>
-                <input 
-                  type="text" 
-                  value={book} 
-                  onChange={(e) => setBook(e.target.value)} 
-                  placeholder="창, 출, 시, 롬 등"
-                  style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #475569', backgroundColor: '#0f172a', color: 'white', boxSizing: 'border-box' }}
-                />
-              </div>
-
-              <div>
-                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>{unit} 번호</label>
-                <input 
-                  type="number" 
-                  value={chapter} 
-                  onChange={(e) => setChapter(e.target.value)} 
-                  style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #475569', backgroundColor: '#0f172a', color: 'white', boxSizing: 'border-box' }}
-                />
-              </div>
-
-              <div style={{ backgroundColor: '#0f172a', padding: '10px 14px', borderRadius: '8px', border: '1px solid #334155' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 'bold', color: '#38bdf8', cursor: 'pointer' }}>
-                  <input 
-                    type="checkbox" 
-                    checked={isAllVerses} 
-                    onChange={(e) => setIsAllVerses(e.target.checked)} 
-                    style={{ width: '16px', height: '16px', cursor: 'pointer' }}
-                  />
-                  ⚡ 이 {unit}의 전체 절 자동 생성
-                </label>
-              </div>
-
-              {!isAllVerses && (
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>시작 절</label>
-                    <input 
-                      type="number" 
-                      value={startVerse} 
-                      onChange={(e) => setStartVerse(e.target.value)} 
-                      style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #475569', backgroundColor: '#0f172a', color: 'white', boxSizing: 'border-box' }}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>끝 절</label>
-                    <input 
-                      type="number" 
-                      value={endVerse} 
-                      onChange={(e) => setEndVerse(e.target.value)} 
-                      style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #475569', backgroundColor: '#0f172a', color: 'white', boxSizing: 'border-box' }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* 폰트 선택 드롭다운 (경기천년체 6종 추가) */}
-              <div>
-                <label style={{ display: 'block', fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>출력 폰트 선택</label>
-                <select 
-                  value={fontName} 
-                  onChange={(e) => setFontName(e.target.value)}
-                  style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #475569', backgroundColor: '#0f172a', color: 'white' }}
+            <label className="block text-xs font-bold text-slate-400 mb-1">번역본 선택 (2개 선택 시 대조 슬라이드)</label>
+            <div className="flex flex-wrap gap-1.5">
+              {["개역개정", "표준새번역", "NIV"].map((ver) => (
+                <button
+                  key={ver}
+                  type="button"
+                  onClick={() => toggleVersion(ver)}
+                  className={`px-3 py-1 rounded text-xs font-bold transition ${
+                    selectedVersions.includes(ver)
+                      ? "bg-amber-500 text-slate-950 shadow"
+                      : "bg-slate-700 text-slate-300 hover:bg-slate-600"
+                  }`}
                 >
-                  <optgroup label="경기천년체">
-                    <option value="경기천년바탕 Bold">경기천년바탕 Bold</option>
-                    <option value="경기천년바탕 Regular">경기천년바탕 Regular</option>
-                    <option value="경기천년제목 Bold">경기천년제목 Bold</option>
-                    <option value="경기천년제목 Light">경기천년제목 Light</option>
-                    <option value="경기천년제목 Medium">경기천년제목 Medium</option>
-                    <option value="경기천년제목V Bold">경기천년제목V Bold</option>
-                  </optgroup>
-                  <optgroup label="기본 서체">
-                    <option value="Pretendard">Pretendard</option>
-                    <option value="맑은 고딕">맑은 고딕</option>
-                  </optgroup>
-                </select>
+                  {ver}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 단일 본문 입력 구역 */}
+          <div className="pt-2 border-t border-slate-700">
+            <span className="text-xs font-semibold text-slate-400 mb-2 block">단일 본문 입력</span>
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-0.5">성경(약어 가능)</label>
+                <input
+                  type="text"
+                  value={book}
+                  placeholder="예: 창, 계"
+                  onChange={(e) => setBook(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-sm text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-0.5">장</label>
+                <input
+                  type="number"
+                  value={chapter}
+                  onChange={(e) => setChapter(Number(e.target.value))}
+                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-sm text-white"
+                />
               </div>
             </div>
 
-            <button 
-              onClick={handleSearch}
-              disabled={loading}
-              style={{ width: '100%', padding: '14px', backgroundColor: '#0284c7', color: 'white', border: 'none', borderRadius: '10px', fontSize: '15px', fontWeight: 'bold', cursor: 'pointer', marginBottom: '10px' }}
-            >
-              {loading ? '본문 로딩 중...' : '1. 본문 확인 및 슬라이드 구성'}
-            </button>
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-0.5">시작 절</label>
+                <input
+                  type="text"
+                  value={startVerse}
+                  placeholder="전체"
+                  onChange={(e) => setStartVerse(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-sm text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-0.5">끝 절</label>
+                <input
+                  type="text"
+                  value={endVerse}
+                  placeholder="전체"
+                  onChange={(e) => setEndVerse(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-sm text-white"
+                />
+              </div>
+            </div>
 
-            <button 
-              onClick={handleDownloadPPT}
-              style={{ width: '100%', padding: '14px', backgroundColor: '#10b981', color: 'white', border: 'none', borderRadius: '10px', fontSize: '15px', fontWeight: 'bold', cursor: 'pointer' }}
+            <button
+              type="button"
+              onClick={handleGeneratePpt}
+              className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg shadow transition text-sm"
             >
-              2. 📊 완성 PPTX 파일 다운로드
+              단일 본문 PPT 생성 및 열기
             </button>
           </div>
 
-          {/* 슬라이드 뷰어 */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h2 style={{ fontSize: '17px', fontWeight: '700', color: '#e2e8f0', margin: 0 }}>
-                실제 슬라이드 뷰어 (16:9)
-              </h2>
-              {versesData.length > 0 && (
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <button 
-                    onClick={() => setActiveSlideIndex(prev => Math.max(0, prev - 1))}
-                    disabled={activeSlideIndex === 0}
-                    style={{ padding: '6px 14px', borderRadius: '6px', backgroundColor: '#334155', color: 'white', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
-                  >
-                    ◀ 이전
-                  </button>
-                  <span style={{ fontSize: '13px', color: '#94a3b8', minWidth: '70px', textAlign: 'center' }}>
-                    {activeSlideIndex + 1} / {versesData.length}
-                  </span>
-                  <button 
-                    onClick={() => setActiveSlideIndex(prev => Math.min(versesData.length - 1, prev + 1))}
-                    disabled={activeSlideIndex === versesData.length - 1}
-                    style={{ padding: '6px 14px', borderRadius: '6px', backgroundColor: '#334155', color: 'white', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
-                  >
-                    다음 ▶
-                  </button>
-                </div>
-              )}
-            </div>
-
-            <div style={{
-              width: '100%',
-              aspectRatio: '16 / 9',
-              backgroundColor: '#002060',
-              borderRadius: '16px',
-              boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
-              padding: '40px 32px',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'flex-start',
-              boxSizing: 'border-box'
-            }}>
-              {versesData.length > 0 ? (
-                <>
-                  <div style={{ 
-                    fontFamily: getPreviewFontFamily(),
-                    fontSize: '28px', 
-                    fontWeight: '800', 
-                    color: '#FFC000', 
-                    marginBottom: '24px', 
-                    textAlign: 'center' 
-                  }}>
-                    {book} {chapter}{unit} {versesData[activeSlideIndex].verse_num}절
-                  </div>
-                  <div style={{ 
-                    fontFamily: getPreviewFontFamily(),
-                    fontSize: '24px', 
-                    fontWeight: getPreviewFontWeight(), 
-                    color: '#FFFFFF', 
-                    textAlign: 'center', 
-                    lineHeight: '1.6', 
-                    wordBreak: 'keep-all', 
-                    maxWidth: '88%' 
-                  }}>
-                    {versesData[activeSlideIndex].text}
-                  </div>
-                </>
-              ) : (
-                <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', fontSize: '16px' }}>
-                  성경과 장을 입력하고 [본문 확인 및 슬라이드 구성]을 누르면 여기에 슬라이드가 나타납니다.
-                </div>
-              )}
-            </div>
+          {/* ▼▼▼ 여러 본문 한 번에 입력하는 구역 ▼▼▼ */}
+          <div className="pt-3 border-t border-slate-700">
+            <label className="block text-xs font-bold text-emerald-400 mb-1">
+              ✨ 여러 본문 한 번에 연속 생성
+            </label>
+            <textarea
+              rows={3}
+              placeholder="예: 창 1:1-3, 요 3:16, 롬 8:28&#13;&#10;(쉼표, 세미콜론, 줄바꿈으로 구분)"
+              value={multiQuery}
+              onChange={(e) => setMultiQuery(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-white mb-2 focus:border-emerald-500 focus:outline-none"
+            />
+            <button
+              type="button"
+              onClick={handleGenerateMultiPpt}
+              className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg shadow transition text-sm"
+            >
+              여러 본문 합본 PPT 생성 및 즉시 열기
+            </button>
           </div>
-
         </div>
 
+        {/* 우측: 성경 본문 검색 및 오탈자 관리 */}
+        <div className="bg-slate-800 p-5 rounded-xl border border-slate-700 md:col-span-2 flex flex-col">
+          <h2 className="text-base font-bold text-amber-300 mb-2">성경 본문 검색 및 오탈자 관리</h2>
+          <div className="flex gap-2 mb-3">
+            <input
+              type="text"
+              placeholder="검색할 단어 입력 (예: 태초에, 사랑)"
+              value={searchWord}
+              onChange={(e) => setSearchWord(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleSearch(); }}
+              className="flex-1 bg-slate-900 border border-slate-700 rounded p-2 text-sm text-white"
+            />
+            <button
+              type="button"
+              onClick={handleSearch}
+              disabled={isSearching}
+              className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded font-bold text-sm text-white transition"
+            >
+              {isSearching ? "검색 중..." : "검색"}
+            </button>
+          </div>
+
+          <div className="flex-1 max-h-96 overflow-y-auto space-y-2 pr-1">
+            {Array.isArray(searchResults) && searchResults.map((r, idx) => (
+              <div
+                key={idx}
+                className="p-3 bg-slate-900/80 border border-slate-800 rounded flex justify-between items-start text-xs"
+              >
+                <div>
+                  <span className="font-bold text-amber-400 mr-2">
+                    {r.book} {r.chapter}장 {r.verse_num}절
+                  </span>
+                  <p className="text-slate-300 mt-1 leading-relaxed">{r.text}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleQuickPpt(r)}
+                 className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-[11px] font-bold rounded text-white shadow transition"
+                 title="이 구절로 즉시 PPT 열기"
+                 >
+                 PPT 열기
+                </button>
+               <button
+                 type="button"
+                 onClick={() => {
+                      setEditVerse(r);
+                      setEditText(r.text);
+                 }}
+                 className="px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-[11px] rounded text-slate-300"
+             >
+                수정
+               </button>
+              </div>
+            ))}
+          </div>
+
+          {/* 구절 수정 창 */}
+          {editVerse && (
+            <div className="mt-3 p-3 bg-slate-950 border border-amber-500/50 rounded-lg">
+              <h3 className="text-xs font-bold text-amber-400 mb-1">
+                구절 오탈자 수정 및 수동 분할 ({editVerse.book} {editVerse.chapter}장 {editVerse.verse_num}절)
+              </h3>
+              <textarea
+                value={editText}
+                onChange={(e) => setEditText(e.target.value)}
+                rows={2}
+                className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-xs text-slate-200 focus:outline-none"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                * 문장 중간에 <span className="text-amber-400 font-bold">//</span> 기호를 넣으면 해당 위치에서 슬라이드가 나뉩니다.
+              </p>
+              <div className="flex gap-2 justify-end mt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditVerse(null)}
+                  className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-xs rounded text-slate-300"
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveVerse}
+                  className="px-3 py-1 bg-amber-600 hover:bg-amber-500 font-bold text-xs text-white rounded"
+                >
+                  DB 저장
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
-  )
+  );
 }
