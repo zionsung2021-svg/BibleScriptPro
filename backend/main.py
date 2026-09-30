@@ -270,7 +270,7 @@ def create_ppt_stream_or_open(
         unit = "편" if book == "시편" else "장"
         verses_by_version = {}
 
-   with get_db() as conn:
+    with get_db() as conn:
             cursor = conn.cursor()
             
             # version 컬럼 유무 확인 (구버전/신버전 DB 호환)
