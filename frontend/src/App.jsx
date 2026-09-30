@@ -101,15 +101,34 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query_text: multiQuery,
+          lines: multiQuery,
           versions: selectedVersions,
           font_name: fontName,
         }),
       });
+
       if (!res.ok) {
         const err = await res.json().catch(() => null);
         throw new Error(err?.detail || "다중 본문 생성에 실패했습니다.");
       }
-      await res.json().catch(() => null);
+
+      // 로컬(JSON) vs 웹(스트림 다운로드) 분기
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        await res.json().catch(() => null);
+        return; // 로컬: PPT 자동 실행 완료
+      }
+
+      // 웹 브라우저 다운로드 처리
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `성경본문_합본.pptx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
     } catch (err) {
       alert("다중 PPT 생성 오류: " + err.message);
     }

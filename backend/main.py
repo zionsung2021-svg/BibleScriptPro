@@ -278,6 +278,226 @@ def shutdown_app():
     threading.Thread(target=kill_process, daemon=True).start()
     return {"status": "success", "message": "프로그램을 종료합니다."}
 
+# 성경 한 글자/두 글자 약어 변환 맵
+BIBLE_ABBR_MAP = {
+    "창": "창세기", "출": "출애굽기", "레": "레위기", "민": "민수기", "신": "신명기",
+    "수": "여호수아", "삿": "사사기", "룻": "룻기", "삼상": "사무엘상", "삼하": "사무엘하",
+    "왕상": "열왕기상", "왕하": "열왕기하", "대상": "역대상", "대하": "역대하",
+    "스": "에스라", "느": "느헤미야", "에": "에스더", "욥": "욥기", "시": "시편",
+    "잠": "잠언", "전": "전도서", "아": "아가", "사": "이사야", "렘": "예레미야",
+    "애": "예레미야애가", "겔": "에스겔", "단": "다니엘", "호": "호세아", "욜": "요엘",
+    "암": "아모스", "옵": "오바댜", "욘": "요나", "미": "미가", "나": "나훔",
+    "합": "하박국", "습": "스바냐", "학": "학개", "슥": "스가랴", "말": "말라기",
+    "마": "마태복음", "막": "마가복음", "눅": "누가복음", "요": "요한복음",
+    "행": "사도행전", "롬": "로마서", "고전": "고린도전서", "고후": "고린도후서",
+    "갈": "갈라디아서", "엡": "에베소서", "빌": "빌립보서", "골": "골로새서",
+    "살전": "데살로니가전서", "살후": "데살로니가후서", "딤전": "디모데전서", "딤후": "디모데후서",
+    "딛": "디도서", "몬": "빌레몬서", "히": "히브리서", "약": "야고보서",
+    "벧전": "베드로전서", "벧후": "베드로후서", "요일": "요한일서", "요이": "요한이서",
+    "요삼": "요한삼서", "유": "유다서", "계": "요한계시록"
+}
+
+def normalize_book_name(name: str) -> str:
+    cleaned = name.strip()
+    return BIBLE_ABBR_MAP.get(cleaned, cleaned)
+
+
+class MultiPptRequest(BaseModel):
+    lines: Optional[str] = None
+    query_text: Optional[str] = None
+    versions: List[str] = ["개역개정"]
+    font_name: str = "경기천년제목 Bold"
+
+# 다중 본문 합본 PPT 생성 엔드포인트
+@app.api_route("/api/open-multi-ppt", methods=["GET", "POST"])
+def create_multi_ppt_stream_or_open(payload: Optional[MultiPptRequest] = None, lines: Optional[str] = Query(None), versions: List[str] = Query(["개역개정"]), font_name: str = Query("경기천년제목 Bold")):
+    import re
+    # POST 바디 또는 GET 쿼리 파라미터 호환 처리
+    input_text = ""
+    if payload:
+        input_text = payload.query_text or payload.lines or ""
+    elif lines:
+        input_text = lines
+    use_versions = payload.versions if payload and payload.versions else versions
+    use_font = payload.font_name if payload and payload.font_name else font_name
+
+    if not input_text.strip():
+        raise HTTPException(status_code=400, detail="본문 목록이 비어 있습니다.")
+
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('verses', 'bibles', 'bible')")
+        table_name = cursor.fetchone()[0]
+
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        cols = [c[1] for c in cursor.fetchall()]
+        has_ver_col = "version" in cols
+        verse_col = "verse_num" if "verse_num" in cols else "verse"
+        text_col = "text" if "text" in cols else "content"
+
+        for line in input_text.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+
+            # 구절 파싱 (예: "창 1:1-3", "창세기 1:1", "시 23:1")
+            m = re.match(r"^([가-힣]+)\s*(\d+)[:장편]\s*(\d+)(?:[-~](\d+))?", line)
+            if not m:
+                continue
+
+            b_name, ch, sv, ev = m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)) if m.group(4) else int(m.group(3))
+            canonical = normalize_book_name(b_name)
+            unit = "편" if canonical == "시편" else "장"
+
+            v_by_ver = {}
+            for ver in use_versions:
+                q = f"SELECT {verse_col} AS verse_num, {text_col} AS text FROM {table_name} WHERE book = ? AND chapter = ? AND {verse_col} BETWEEN ? AND ?"
+                p = [canonical, ch, sv, ev]
+                if has_ver_col:
+                    q += " AND version = ?"
+                    p.append(ver)
+                q += f" ORDER BY {verse_col} ASC"
+                cursor.execute(q, p)
+                v_by_ver[ver] = [{"verse_num": r["verse_num"], "text": r["text"]} for r in cursor.fetchall()]
+
+            if v_by_ver.get(use_versions[0]):
+                sub_prs = build_presentation(v_by_ver, canonical, ch, unit, use_font, use_versions)
+                # 생성된 슬라이드를 메인 프레젠테이션으로 병합 (blank slide 생성 로직 활용)
+                for slide in sub_prs.slides:
+                    # build_presentation이 생성한 슬라이드들을 순차 포함
+                    pass
+
+    # 전체 다중 프레젠테이션 직접 빌드 (안정적인 단일 파일 생성)
+    # 실제로는 파싱된 모든 구절 세트를 순회하여 프레젠테이션에 슬라이드를 직접 추가
+    full_prs = Presentation()
+    full_prs.slide_width = Inches(13.333)
+    full_prs.slide_height = Inches(7.5)
+    blank_layout = full_prs.slide_layouts[6]
+    bg_color = RGBColor(0, 32, 96)
+    title_color = RGBColor(255, 192, 0)
+    body_color = RGBColor(255, 255, 255)
+    label_color = RGBColor(200, 225, 255)
+    is_bold = not any(w in use_font for w in ["Regular", "Light", "Medium"])
+    num_versions = len(use_versions)
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('verses', 'bibles', 'bible')")
+        table_name = cursor.fetchone()[0]
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        cols = [c[1] for c in cursor.fetchall()]
+        has_ver_col = "version" in cols
+        verse_col = "verse_num" if "verse_num" in cols else "verse"
+        text_col = "text" if "text" in cols else "content"
+
+        has_any_slide = False
+        for line in input_text.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            m = re.match(r"^([가-힣]+)\s*(\d+)[:장편]\s*(\d+)(?:[-~](\d+))?", line)
+            if not m:
+                continue
+            b_name, ch, sv, ev = m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)) if m.group(4) else int(m.group(3))
+            canonical = normalize_book_name(b_name)
+            unit = "편" if canonical == "시편" else "장"
+
+            v_by_ver = {}
+            for ver in use_versions:
+                q = f"SELECT {verse_col} AS verse_num, {text_col} AS text FROM {table_name} WHERE book = ? AND chapter = ? AND {verse_col} BETWEEN ? AND ?"
+                p = [canonical, ch, sv, ev]
+                if has_ver_col:
+                    q += " AND version = ?"
+                    p.append(ver)
+                q += f" ORDER BY {verse_col} ASC"
+                cursor.execute(q, p)
+                v_by_ver[ver] = [{"verse_num": r["verse_num"], "text": r["text"]} for r in cursor.fetchall()]
+
+            base_v = v_by_ver.get(use_versions[0], [])
+            for v in base_v:
+                has_any_slide = True
+                v_num = v["verse_num"]
+                if num_versions == 1:
+                    chunks = split_verse_text(v["text"], max_chars=65)
+                    for chunk in chunks:
+                        slide = full_prs.slides.add_slide(blank_layout)
+                        slide.background.fill.solid()
+                        slide.background.fill.fore_color.rgb = bg_color
+                        tb = slide.shapes.add_textbox(Inches(1.0), Inches(0.6), Inches(11.333), Inches(1.1))
+                        p = tb.text_frame.paragraphs[0]
+                        p.text = f"{canonical} {ch}{unit} {v_num}절"
+                        p.alignment = PP_ALIGN.CENTER
+                        set_korean_font(p, use_font, 50, title_color, is_bold=True)
+
+                        cb = slide.shapes.add_textbox(Inches(0.8), Inches(1.85), Inches(11.733), Inches(4.8))
+                        pc = cb.text_frame.paragraphs[0]
+                        pc.text = chunk
+                        pc.alignment = PP_ALIGN.CENTER
+                        pc.line_spacing = 1.25
+                        set_korean_font(pc, use_font, 52, body_color, is_bold=is_bold)
+                else:
+                    slide = full_prs.slides.add_slide(blank_layout)
+                    slide.background.fill.solid()
+                    slide.background.fill.fore_color.rgb = bg_color
+                    tb = slide.shapes.add_textbox(Inches(0.8), Inches(0.4), Inches(11.733), Inches(0.9))
+                    p = tb.text_frame.paragraphs[0]
+                    p.text = f"{canonical} {ch}{unit} {v_num}절"
+                    p.alignment = PP_ALIGN.CENTER
+                    set_korean_font(p, use_font, 46, title_color, is_bold=True)
+
+                    left_margin = Inches(0.8)
+                    available_width = 11.733
+                    gap = 0.4
+                    col_width_val = (available_width - (gap * (num_versions - 1))) / num_versions
+                    col_width = Inches(col_width_val)
+                    body_font_size = 34 if num_versions == 2 else 26
+
+                    for idx, ver in enumerate(use_versions):
+                        col_left = left_margin + Inches(idx * (col_width_val + gap))
+                        ver_verse = next((item for item in v_by_ver.get(ver, []) if item["verse_num"] == v_num), None)
+                        ver_text = ver_verse["text"] if ver_verse else ""
+
+                        box = slide.shapes.add_textbox(col_left, Inches(1.5), col_width, Inches(5.3))
+                        tf = box.text_frame
+                        tf.word_wrap = True
+                        p_label = tf.paragraphs[0]
+                        p_label.text = f"[{ver}]"
+                        set_korean_font(p_label, use_font, 26 if num_versions == 2 else 22, label_color, is_bold=True)
+
+                        p_body = tf.add_paragraph()
+                        p_body.text = ver_text
+                        p_body.line_spacing = 1.25
+                        set_korean_font(p_body, use_font, body_font_size, body_color, is_bold=is_bold)
+
+    if not has_any_slide:
+        raise HTTPException(status_code=404, detail="입력된 구절에서 유효한 성경 본문을 찾지 못했습니다.")
+
+    filename = f"성경본문_합본_{int(time.time())}.pptx"
+    encoded_filename = urllib.parse.quote(filename)
+
+    if os.name == "nt":
+        temp_dir = tempfile.gettempdir()
+        file_path = os.path.join(temp_dir, filename)
+        full_prs.save(file_path)
+        try:
+            os.startfile(file_path)
+        except Exception:
+            pass
+        return {"status": "success", "mode": "local", "file_path": file_path}
+
+    file_stream = io.BytesIO()
+    full_prs.save(file_stream)
+    file_stream.seek(0)
+    return StreamingResponse(
+        file_stream,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+    )
+
 # 기존 @app.post("/api/open-ppt") 대신 아래처럼 교체:
 @app.api_route("/api/open-ppt", methods=["GET", "POST"])
 def create_ppt_stream_or_open(
