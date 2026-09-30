@@ -32,7 +32,7 @@ app.add_middleware(
 if getattr(sys, 'frozen', False):
     BASE_DIR = sys._MEIPASS
 else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 possible_paths = [
     os.path.join(BASE_DIR, "backend", "bible.db"),
@@ -56,6 +56,48 @@ def get_db():
     return conn
 
 
+# ==================== 헬퍼 유틸리티 함수 ====================
+
+def set_korean_font(paragraph, font_name: str, font_size_pt: int, color_rgb: RGBColor, is_bold: bool = False):
+    """문단 폰트 및 한국어 폰트 속성 적용"""
+    for run in paragraph.runs:
+        run.font.name = font_name
+        run.font.size = Pt(font_size_pt)
+        run.font.color.rgb = color_rgb
+        run.font.bold = is_bold
+        # 파워포인트 동아시아 폰트 명시
+        rPr = run._r.get_or_add_rPr()
+        ea = rPr.find("{http://schemas.openxmlformats.org/drawingml/2006/main}ea")
+        if ea is None:
+            ea = rPr.makeelement("{http://schemas.openxmlformats.org/drawingml/2006/main}ea")
+            rPr.append(ea)
+        ea.set("typeface", font_name)
+
+
+def split_verse_text(text: str, max_chars: int = 65) -> List[str]:
+    """긴 구절을 읽기 좋게 문장 부호 단위로 분할"""
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    current_chunk = ""
+    # 마침표, 쉼표, 세미콜론 뒤 분할
+    sentences = [s.strip() for s in text.replace(". ", ".\n").replace(", ", ",\n").split("\n") if s.strip()]
+
+    for s in sentences:
+        if len(current_chunk) + len(s) + 1 <= max_chars:
+            current_chunk = f"{current_chunk} {s}".strip()
+        else:
+            if current_chunk:
+                chunks.append(current_chunk)
+            current_chunk = s
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks if chunks else [text]
+
+
 # ==================== 프레젠테이션 생성 엔진 ====================
 
 def build_presentation(verses_by_version: dict, canonical_book: str, chapter: int, unit: str, font_name: str, versions: List[str]):
@@ -77,7 +119,7 @@ def build_presentation(verses_by_version: dict, canonical_book: str, chapter: in
     for v in base_verses:
         verse_num = v["verse_num"]
 
-        # ---------------- 1개 단일 번역본 (54pt 대형 뷰) ----------------
+        # [1] 단일 번역본 (1개)
         if num_versions == 1:
             chunks = split_verse_text(v["text"], max_chars=65)
             for chunk in chunks:
@@ -85,87 +127,49 @@ def build_presentation(verses_by_version: dict, canonical_book: str, chapter: in
                 slide.background.fill.solid()
                 slide.background.fill.fore_color.rgb = bg_color
 
-                # 상단 제목 (54pt)
+                # 상단 제목 (50pt)
                 title_box = slide.shapes.add_textbox(Inches(1.0), Inches(0.6), Inches(11.333), Inches(1.1))
                 tf_title = title_box.text_frame
                 tf_title.word_wrap = True
                 p_title = tf_title.paragraphs[0]
                 p_title.text = f"{canonical_book} {chapter}{unit} {verse_num}절"
                 p_title.alignment = PP_ALIGN.CENTER
-                set_korean_font(p_title, font_name, 54, title_color, is_bold=True)
+                set_korean_font(p_title, font_name, 50, title_color, is_bold=True)
 
-                # 중앙 본문 (54pt, 1.2배 줄간격)
+                # 중앙 본문 (52pt)
                 content_box = slide.shapes.add_textbox(Inches(0.8), Inches(1.85), Inches(11.733), Inches(4.8))
                 tf_content = content_box.text_frame
                 tf_content.word_wrap = True
                 p_content = tf_content.paragraphs[0]
                 p_content.text = chunk
                 p_content.alignment = PP_ALIGN.CENTER
-                p_content.line_spacing = 1.2
-                set_korean_font(p_content, font_name, 54, body_color, is_bold=is_bold)
+                p_content.line_spacing = 1.25
+                set_korean_font(p_content, font_name, 52, body_color, is_bold=is_bold)
 
-        # ---------------- 2개 번역본 비교 (좌우 2단 분할 뷰) ----------------
-        elif num_versions == 2:
-            slide = prs.slides.add_slide(blank_layout)
-            slide.background.fill.solid()
-            slide.background.fill.fore_color.rgb = bg_color
-
-            # 상단 제목 (48pt)
-            title_box = slide.shapes.add_textbox(Inches(1.0), Inches(0.4), Inches(11.333), Inches(0.9))
-            tf_title = title_box.text_frame
-            tf_title.word_wrap = True
-            p_title = tf_title.paragraphs[0]
-            p_title.text = f"{canonical_book} {chapter}{unit} {verse_num}절"
-            p_title.alignment = PP_ALIGN.CENTER
-            set_korean_font(p_title, font_name, 48, title_color, is_bold=True)
-
-            col_width = Inches(5.6)
-            gap = Inches(0.533)
-            left_margin = Inches(0.8)
-            top_content = Inches(1.5)
-            content_height = Inches(5.3)
-
-            for idx, ver in enumerate(versions):
-                col_left = left_margin + idx * (col_width + gap)
-                ver_verse = next((item for item in verses_by_version.get(ver, []) if item["verse_num"] == verse_num), None)
-                ver_text = ver_verse["text"] if ver_verse else ""
-
-                box = slide.shapes.add_textbox(col_left, top_content, col_width, content_height)
-                tf = box.text_frame
-                tf.word_wrap = True
-
-                # 번역본 라벨
-                p_label = tf.paragraphs[0]
-                p_label.text = f"[{ver}]"
-                set_korean_font(p_label, font_name, 28, label_color, is_bold=True)
-
-                # 본문 내용 (36pt, 1.25줄간격)
-                p_body = tf.add_paragraph()
-                p_body.text = ver_text
-                p_body.line_spacing = 1.25
-                set_korean_font(p_body, font_name, 36, body_color, is_bold=is_bold)
-
-        # ---------------- 3개 이상 번역본 (다단 균등 분할 뷰) ----------------
+        # [2] 다중 번역본 대조 (2개 또는 3개 이상 완벽 비율 대응)
         else:
             slide = prs.slides.add_slide(blank_layout)
             slide.background.fill.solid()
             slide.background.fill.fore_color.rgb = bg_color
 
-            title_box = slide.shapes.add_textbox(Inches(1.0), Inches(0.4), Inches(11.333), Inches(0.9))
+            # 상단 제목 (46pt)
+            title_box = slide.shapes.add_textbox(Inches(0.8), Inches(0.4), Inches(11.733), Inches(0.9))
             tf_title = title_box.text_frame
             tf_title.word_wrap = True
             p_title = tf_title.paragraphs[0]
             p_title.text = f"{canonical_book} {chapter}{unit} {verse_num}절"
             p_title.alignment = PP_ALIGN.CENTER
-            set_korean_font(p_title, font_name, 44, title_color, is_bold=True)
+            set_korean_font(p_title, font_name, 46, title_color, is_bold=True)
 
-            total_width = Inches(11.733)
-            gap = Inches(0.4)
-            col_width = (total_width - (gap * (num_versions - 1))) / num_versions
             left_margin = Inches(0.8)
+            available_width = 11.733
+            gap = 0.4
+            col_width_val = (available_width - (gap * (num_versions - 1))) / num_versions
+            col_width = Inches(col_width_val)
+            body_font_size = 34 if num_versions == 2 else 26
 
             for idx, ver in enumerate(versions):
-                col_left = left_margin + idx * (col_width + gap)
+                col_left = left_margin + Inches(idx * (col_width_val + gap))
                 ver_verse = next((item for item in verses_by_version.get(ver, []) if item["verse_num"] == verse_num), None)
                 ver_text = ver_verse["text"] if ver_verse else ""
 
@@ -175,12 +179,11 @@ def build_presentation(verses_by_version: dict, canonical_book: str, chapter: in
 
                 p_label = tf.paragraphs[0]
                 p_label.text = f"[{ver}]"
-                set_korean_font(p_label, font_name, 24, label_color, is_bold=True)
+                set_korean_font(p_label, font_name, 26 if num_versions == 2 else 22, label_color, is_bold=True)
 
                 p_body = tf.add_paragraph()
                 p_body.text = ver_text
-                p_body.line_spacing = 1.2
-                body_font_size = 28 if num_versions == 3 else 22
+                p_body.line_spacing = 1.25
                 set_korean_font(p_body, font_name, body_font_size, body_color, is_bold=is_bold)
 
     return prs
@@ -192,10 +195,19 @@ def build_presentation(verses_by_version: dict, canonical_book: str, chapter: in
 def get_versions():
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT version FROM verses ORDER BY version ASC")
-        rows = cursor.fetchall()
-        versions = [r["version"] for r in rows]
-        return {"versions": versions if versions else ["개역개정"]}
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('verses', 'bibles', 'bible')")
+        table_row = cursor.fetchone()
+        if not table_row:
+            return {"versions": ["개역개정", "표준새번역", "NIV"]}
+        table_name = table_row[0]
+
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        cols = [c[1] for c in cursor.fetchall()]
+        if "version" in cols:
+            cursor.execute(f"SELECT DISTINCT version FROM {table_name} ORDER BY version ASC")
+            versions = [r[0] for r in cursor.fetchall() if r[0]]
+            return {"versions": versions if versions else ["개역개정", "표준새번역", "NIV"]}
+        return {"versions": ["개역개정"]}
 
 
 @app.get("/api/search-keyword")
@@ -206,15 +218,22 @@ def search_keyword(
 ):
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT version, book, chapter, verse_num, text 
-            FROM verses 
-            WHERE version = ? AND text LIKE ? 
-            LIMIT ?
-            """,
-            (version, f"%{keyword}%", limit)
-        )
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('verses', 'bibles', 'bible')")
+        table_name = cursor.fetchone()[0]
+
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        cols = [c[1] for c in cursor.fetchall()]
+        verse_col = "verse_num" if "verse_num" in cols else "verse"
+        text_col = "text" if "text" in cols else "content"
+
+        if "version" in cols:
+            query = f"SELECT version, book, chapter, {verse_col} AS verse_num, {text_col} AS text FROM {table_name} WHERE version = ? AND {text_col} LIKE ? LIMIT ?"
+            params = (version, f"%{keyword}%", limit)
+        else:
+            query = f"SELECT '개역개정' AS version, book, chapter, {verse_col} AS verse_num, {text_col} AS text FROM {table_name} WHERE {text_col} LIKE ? LIMIT ?"
+            params = (f"%{keyword}%", limit)
+
+        cursor.execute(query, params)
         return [dict(r) for r in cursor.fetchall()]
 
 
@@ -229,14 +248,22 @@ class VerseUpdateRequest(BaseModel):
 def update_verse_db(payload: VerseUpdateRequest):
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            UPDATE verses 
-            SET text = ? 
-            WHERE version = ? AND book = ? AND chapter = ? AND verse_num = ?
-            """,
-            (payload.text, payload.version, payload.book, payload.chapter, payload.verse_num)
-        )
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('verses', 'bibles', 'bible')")
+        table_name = cursor.fetchone()[0]
+
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        cols = [c[1] for c in cursor.fetchall()]
+        verse_col = "verse_num" if "verse_num" in cols else "verse"
+        text_col = "text" if "text" in cols else "content"
+
+        if "version" in cols:
+            query = f"UPDATE {table_name} SET {text_col} = ? WHERE version = ? AND book = ? AND chapter = ? AND {verse_col} = ?"
+            params = (payload.text, payload.version, payload.book, payload.chapter, payload.verse_num)
+        else:
+            query = f"UPDATE {table_name} SET {text_col} = ? WHERE book = ? AND chapter = ? AND {verse_col} = ?"
+            params = (payload.text, payload.book, payload.chapter, payload.verse_num)
+
+        cursor.execute(query, params)
         conn.commit()
         if cursor.rowcount == 0:
             raise HTTPException(status_code=404, detail="해당 구절을 찾을 수 없습니다.")
@@ -252,7 +279,6 @@ def shutdown_app():
     return {"status": "success", "message": "프로그램을 종료합니다."}
 
 
-# 로컬 / 웹 자동 분기 파워포인트 생성 API
 @app.post("/api/open-ppt")
 def create_ppt_stream_or_open(
     book: str = Query(...),
@@ -263,7 +289,6 @@ def create_ppt_stream_or_open(
     font_name: str = Query("경기천년제목 Bold")
 ):
     try:
-        # 빈 문자열("") 또는 None 방어 처리
         s_verse = int(start_verse) if (start_verse and str(start_verse).strip().isdigit()) else None
         e_verse = int(end_verse) if (end_verse and str(end_verse).strip().isdigit()) else None
 
@@ -272,55 +297,60 @@ def create_ppt_stream_or_open(
 
         with get_db() as conn:
             cursor = conn.cursor()
-            
-            # version 컬럼 유무 확인 (구버전/신버전 DB 호환)
-            cursor.execute("PRAGMA table_info(verses)")
-            columns = [col[1] for col in cursor.fetchall()]
-            has_version_col = "version" in columns
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('verses', 'bibles', 'bible')")
+            table_name = cursor.fetchone()[0]
+
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            cols = [c[1] for c in cursor.fetchall()]
+            has_version_col = "version" in cols
+            verse_col = "verse_num" if "verse_num" in cols else "verse"
+            text_col = "text" if "text" in cols else "content"
 
             for ver in versions:
+                query = f"SELECT {verse_col} AS verse_num, {text_col} AS text FROM {table_name} WHERE book = ? AND chapter = ?"
+                params = [book, chapter]
+
                 if has_version_col:
-                    query = "SELECT verse_num, text FROM verses WHERE version = ? AND book = ? AND chapter = ?"
-                    params = [ver, book, chapter]
-                else:
-                    query = "SELECT verse_num, text FROM verses WHERE book = ? AND chapter = ?"
-                    params = [book, chapter]
+                    query += " AND version = ?"
+                    params.append(ver)
 
                 if s_verse and e_verse:
-                    query += " AND verse_num BETWEEN ? AND ? ORDER BY verse_num"
+                    query += f" AND {verse_col} BETWEEN ? AND ?"
                     params.extend([s_verse, e_verse])
                 elif s_verse:
-                    query += " AND verse_num = ?"
+                    query += f" AND {verse_col} = ?"
                     params.append(s_verse)
-                else:
-                    query += " ORDER BY verse_num"
 
+                query += f" ORDER BY {verse_col} ASC"
                 cursor.execute(query, params)
                 rows = cursor.fetchall()
                 verses_by_version[ver] = [{"verse_num": r["verse_num"], "text": r["text"]} for r in rows]
 
         base_ver = versions[0]
         if not verses_by_version.get(base_ver):
-             raise HTTPException(status_code=404, detail="성경 본문 데이터를 찾을 수 없습니다.")
+            raise HTTPException(status_code=404, detail="성경 본문 데이터를 찾을 수 없습니다.")
 
-             start_v = start_verse if start_verse else verses_by_version[base_ver][0]["verse_num"]
-             end_v = end_verse if end_verse else verses_by_version[base_ver][-1]["verse_num"]
+        start_v = s_verse if s_verse else verses_by_version[base_ver][0]["verse_num"]
+        end_v = e_verse if e_verse else verses_by_version[base_ver][-1]["verse_num"]
 
-             prs = build_presentation(verses_by_version, book, chapter, unit, font_name, versions)
-    
-            ver_tag = "_".join(versions)
-            filename = f"{book}_{chapter}{unit}_{start_v}_{end_v}절_{ver_tag}.pptx"
-            encoded_filename = urllib.parse.quote(filename)
+        prs = build_presentation(verses_by_version, book, chapter, unit, font_name, versions)
 
-       # [분기 1] Windows 로컬 데스크톱 (.exe 환경) ➔ 파워포인트 즉시 실행
-       if os.name == "nt":
-             temp_dir = tempfile.gettempdir()
-        file_path = os.path.join(temp_dir, filename)
-        prs.save(file_path)
-        os.startfile(file_path)
-        return {"status": "success", "mode": "local", "file_path": file_path}
+        ver_tag = "_".join(versions)
+        filename = f"{book}_{chapter}{unit}_{start_v}_{end_v}절_{ver_tag}.pptx"
+        encoded_filename = urllib.parse.quote(filename)
 
-        # [분기 2] Render 웹 서버 (Linux 환경) ➔ 브라우저 파일 다운로드
+        # [분기 1] Windows 로컬 데스크톱 (.exe 환경) -> PPT 즉시 열기
+        if os.name == "nt":
+            temp_dir = tempfile.gettempdir()
+            file_path = os.path.join(temp_dir, filename)
+            prs.save(file_path)
+            try:
+                os.startfile(file_path)
+            except Exception:
+                pass
+            return {"status": "success", "mode": "local", "file_path": file_path}
+
+        # [분기 2] Render 웹 서버 (Linux 환경) -> 브라우저 스트림 다운로드
         file_stream = io.BytesIO()
         prs.save(file_stream)
         file_stream.seek(0)
@@ -328,13 +358,14 @@ def create_ppt_stream_or_open(
             file_stream,
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
-    )
+        )
 
     except HTTPException:
         raise
     except Exception as e:
         import traceback
         raise HTTPException(status_code=500, detail=f"{str(e)}\n{traceback.format_exc()}")
+
 
 # 정적 파일 마운트 (단일 exe 및 웹 배포 공용)
 FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
@@ -347,4 +378,3 @@ if os.path.exists(FRONTEND_DIST):
         if os.path.exists(file_path) and os.path.isfile(file_path):
             return FileResponse(file_path)
         return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
-
