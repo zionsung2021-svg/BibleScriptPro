@@ -278,8 +278,8 @@ def shutdown_app():
     threading.Thread(target=kill_process, daemon=True).start()
     return {"status": "success", "message": "프로그램을 종료합니다."}
 
-
-@app.post("/api/open-ppt")
+# 기존 @app.post("/api/open-ppt") 대신 아래처럼 교체:
+@app.api_route("/api/open-ppt", methods=["GET", "POST"])
 def create_ppt_stream_or_open(
     book: str = Query(...),
     chapter: int = Query(..., ge=1),
