@@ -367,14 +367,20 @@ def create_ppt_stream_or_open(
         raise HTTPException(status_code=500, detail=f"{str(e)}\n{traceback.format_exc()}")
 
 
-# 정적 파일 마운트 (단일 exe 및 웹 배포 공용)
+# 정적 파일 마운트 (단일 exe 및 웹 배포 공용 방어 로직)
 FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
-if os.path.exists(FRONTEND_DIST):
-    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
+ASSETS_DIR = os.path.join(FRONTEND_DIST, "assets")
 
+if os.path.exists(ASSETS_DIR):
+    app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+
+if os.path.exists(FRONTEND_DIST):
     @app.get("/{full_path:path}")
     def serve_frontend(full_path: str):
         file_path = os.path.join(FRONTEND_DIST, full_path)
         if os.path.exists(file_path) and os.path.isfile(file_path):
             return FileResponse(file_path)
-        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+        index_file = os.path.join(FRONTEND_DIST, "index.html")
+        if os.path.exists(index_file):
+            return FileResponse(index_file)
+        return {"status": "running", "message": "BibleScript Pro Backend API is Active"}
