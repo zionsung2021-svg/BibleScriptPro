@@ -68,14 +68,12 @@ export default function App() {
         throw new Error(errorData?.detail || `서버 에러 (${response.status})`);
       }
 
-      // 서버 응답 분기 (JSON이면 로컬 열기 완료, Blob 스트림이면 웹 브라우저 다운로드)
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("application/json")) {
         await response.json().catch(() => null);
-        return; // 로컬 환경: 파워포인트 자동 열림 완료
+        return;
       }
 
-      // 웹 환경: 브라우저 파일 다운로드 트리거
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -88,28 +86,6 @@ export default function App() {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       alert("PPT 생성 오류: " + err.message);
-    }
-  };
-      // 서버 응답이 JSON(로컬 실행 시)인지 파일 스트림(웹 배포 시)인지 분기
-      const contentType = res.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        const data = await res.json();
-        // 로컬 환경: 파워포인트 자동 열림 완료
-        return;
-      }
-
-      // 웹 환경: 브라우저 다운로드 실행
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${selectedBook}_${chapter}장.pptx`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      alert(`다중 PPT 생성 오류: ${err.message}`);
     }
   };
 
