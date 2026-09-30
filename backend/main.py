@@ -300,17 +300,17 @@ def create_ppt_stream_or_open(
                 verses_by_version[ver] = [{"verse_num": r["verse_num"], "text": r["text"]} for r in rows]
 
         base_ver = versions[0]
-        if not verses_by_version.get(base_ver):
+          if not verses_by_version.get(base_ver):
              raise HTTPException(status_code=404, detail="성경 본문 데이터를 찾을 수 없습니다.")
 
-        start_v = start_verse if start_verse else verses_by_version[base_ver][0]["verse_num"]
-        end_v = end_verse if end_verse else verses_by_version[base_ver][-1]["verse_num"]
+             start_v = start_verse if start_verse else verses_by_version[base_ver][0]["verse_num"]
+             end_v = end_verse if end_verse else verses_by_version[base_ver][-1]["verse_num"]
 
-        prs = build_presentation(verses_by_version, book, chapter, unit, font_name, versions)
+             prs = build_presentation(verses_by_version, book, chapter, unit, font_name, versions)
     
-        ver_tag = "_".join(versions)
-        filename = f"{book}_{chapter}{unit}_{start_v}_{end_v}절_{ver_tag}.pptx"
-        encoded_filename = urllib.parse.quote(filename)
+            ver_tag = "_".join(versions)
+            filename = f"{book}_{chapter}{unit}_{start_v}_{end_v}절_{ver_tag}.pptx"
+            encoded_filename = urllib.parse.quote(filename)
 
         # [분기 1] Windows 로컬 데스크톱 (.exe 환경) ➔ 파워포인트 즉시 실행
         if os.name == "nt":
@@ -330,7 +330,7 @@ def create_ppt_stream_or_open(
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
     )
 
-except HTTPException:
+    except HTTPException:
         raise
     except Exception as e:
         import traceback
