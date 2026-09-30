@@ -300,7 +300,7 @@ def create_ppt_stream_or_open(
                 verses_by_version[ver] = [{"verse_num": r["verse_num"], "text": r["text"]} for r in rows]
 
         base_ver = versions[0]
-          if not verses_by_version.get(base_ver):
+        if not verses_by_version.get(base_ver):
              raise HTTPException(status_code=404, detail="성경 본문 데이터를 찾을 수 없습니다.")
 
              start_v = start_verse if start_verse else verses_by_version[base_ver][0]["verse_num"]
@@ -312,8 +312,8 @@ def create_ppt_stream_or_open(
             filename = f"{book}_{chapter}{unit}_{start_v}_{end_v}절_{ver_tag}.pptx"
             encoded_filename = urllib.parse.quote(filename)
 
-        # [분기 1] Windows 로컬 데스크톱 (.exe 환경) ➔ 파워포인트 즉시 실행
-        if os.name == "nt":
+       # [분기 1] Windows 로컬 데스크톱 (.exe 환경) ➔ 파워포인트 즉시 실행
+       if os.name == "nt":
              temp_dir = tempfile.gettempdir()
         file_path = os.path.join(temp_dir, filename)
         prs.save(file_path)
