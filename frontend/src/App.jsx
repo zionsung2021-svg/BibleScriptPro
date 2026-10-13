@@ -51,6 +51,36 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+// 자동 업데이트 상태 및 핸들러
+  const [updateInfo, setUpdateInfo] = useState(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  useEffect(() => {
+    // 앱 실행 시 새 버전 유무 점검
+    fetch("/api/update/check")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.has_update) {
+          setUpdateInfo(data);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleApplyUpdate = async () => {
+    if (!updateInfo) return;
+    if (window.confirm(`새 버전(v${updateInfo.latest_version})이 감지되었습니다.\n지금 즉시 업데이트하고 프로그램을 다시 시작할까요?`)) {
+      setIsUpdating(true);
+      try {
+        const res = await fetch("/api/update/apply", { method: "POST" });
+        if (!res.ok) throw new Error("업데이트 실패");
+      } catch (err) {
+        alert("업데이트 적용 중 오류가 발생했습니다: " + err.message);
+        setIsUpdating(false);
+      }
+    }
+  };
+
   // 번역본 선택 토글
   const toggleVersion = (ver) => {
     if (selectedVersions.includes(ver)) {
@@ -214,20 +244,54 @@ export default function App() {
       alert("오류가 발생했습니다.");
     }
   };
-
+const handleShutdown = async () => {
+    if (window.confirm("프로그램을 완전히 종료하시겠습니까?")) {
+      try {
+        await fetch("/api/shutdown", { method: "POST" });
+      } catch (err) {
+        console.error("Shutdown call error:", err);
+      }
+      window.close();
+      document.body.innerHTML = `
+        <div style="display:flex;justify-content:center;align-items:center;height:100vh;background:#0d1117;color:#fff;font-family:sans-serif;flex-direction:column;">
+          <h2 style="font-size:1.8rem;margin-bottom:12px;">프로그램이 안전하게 종료되었습니다.</h2>
+          <p style="color:#8b949e;">이 브라우저 창을 닫아주세요.</p>
+        </div>
+      `;
+    }
+  };
   return (
     <div className="min-h-screen bg-slate-900 text-gray-100 p-6 flex flex-col items-center">
-      {/* 상단 헤더 */}
-      <div className="w-full max-w-6xl mb-6 flex justify-between items-center">
+    {/* 상단 헤더 & 프로그램 종료 버튼 */}
+      <header className="w-full max-w-6xl flex justify-between items-center mb-6">
         <div>
-          <h1 className="text-3xl font-extrabold text-blue-400 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-white flex items-center gap-2">
             📖 BibleScript Pro
           </h1>
-          <p className="text-sm text-gray-400 mt-1">
-            교회 방송실 및 예배용 고화질 성경 PPT 자동 생성기
-          </p>
+          <p className="text-sm text-gray-400">예배용 고화질 성경 PPT 자동 생성기</p>
         </div>
-      </div>
+        <button
+          onClick={handleShutdown}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-300 bg-rose-950/50 hover:bg-rose-900/80 border border-rose-500/40 rounded-lg transition-all duration-200 shadow-sm cursor-pointer"
+          title="프로그램 및 백엔드 서버 종료"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+            <line x1="12" y1="2" x2="12" y2="12" />
+          </svg>
+          프로그램 종료
+        </button>
+      </header>
 
       <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* 좌측: 구절 및 번역본 설정 */}

@@ -7,6 +7,10 @@ import urllib.parse
 import sqlite3
 import threading
 import time
+import zipfile
+import shutil
+import subprocess
+import httpx
 from typing import Optional, List
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,33 +32,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# PyInstaller 번들 경로 및 로컬 경로 자동 탐색
+# PyInstaller 번들 경로 및 설치 폴더, 로컬 경로 완벽 자동 탐색
 if getattr(sys, 'frozen', False):
-    BASE_DIR = sys._MEIPASS
+    EXE_DIR = os.path.dirname(sys.executable)
+    BASE_DIR = getattr(sys, '_MEIPASS', EXE_DIR)
 else:
-    BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    EXE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    BASE_DIR = EXE_DIR
 
+# 캡처에서 확인된 _internal\backend\bible.db 경로를 1순위로 탐색
 possible_paths = [
+    os.path.join(EXE_DIR, "_internal", "backend", "bible.db"),
+    os.path.join(EXE_DIR, "_internal", "bible.db"),
+    os.path.join(BASE_DIR, "_internal", "backend", "bible.db"),
     os.path.join(BASE_DIR, "backend", "bible.db"),
     os.path.join(BASE_DIR, "bible.db"),
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "bible.db"),
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "bible.db"),
+    os.path.join(EXE_DIR, "backend", "bible.db"),
+    r"C:\BibleScript\backend\bible.db",
+    r"C:\BibleScript\bible.db",
 ]
 
 DB_PATH = None
 for p in possible_paths:
-    if os.path.exists(p):
-        DB_PATH = p
+    if p and os.path.exists(p) and os.path.getsize(p) > 10240:
+        DB_PATH = os.path.abspath(p)
         break
 
 if not DB_PATH:
-    DB_PATH = os.path.join(BASE_DIR, "backend", "bible.db")
+    DB_PATH = os.path.join(EXE_DIR, "_internal", "backend", "bible.db")
 
 def get_db():
+    global DB_PATH
+    if not os.path.exists(DB_PATH) or os.path.getsize(DB_PATH) <= 10240:
+        for p in possible_paths:
+            if p and os.path.exists(p) and os.path.getsize(p) > 10240:
+                DB_PATH = os.path.abspath(p)
+                break
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-
 
 # ==================== 헬퍼 유틸리티 함수 ====================
 
@@ -277,6 +293,96 @@ def shutdown_app():
         os._exit(0)
     threading.Thread(target=kill_process, daemon=True).start()
     return {"status": "success", "message": "프로그램을 종료합니다."}
+
+# ==================== 자동 업데이트 엔진 ====================
+
+CURRENT_VERSION = "0.9.0"
+GITHUB_REPO = "zionsung2021-svg/BibleScriptPro"
+
+@app.get("/api/update/check")
+async def check_update():
+    """GitHub 최신 릴리즈 확인"""
+    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            resp = await client.get(api_url, headers={"User-Agent": "BibleScriptPro-Updater"})
+            if resp.status_code == 200:
+                data = resp.json()
+                latest_tag = data.get("tag_name", "").lstrip("v")
+                
+                download_url = None
+                for asset in data.get("assets", []):
+                    name = asset.get("name", "").lower()
+                    if name.endswith(".zip") or name.endswith(".exe"):
+                        download_url = asset.get("browser_download_url")
+                        break
+
+                has_update = latest_tag > CURRENT_VERSION
+
+                return {
+                    "current_version": CURRENT_VERSION,
+                    "latest_version": latest_tag,
+                    "has_update": has_update,
+                    "download_url": download_url,
+                    "release_notes": data.get("body", "")
+                }
+    except Exception as e:
+        return {"current_version": CURRENT_VERSION, "has_update": False, "error": str(e)}
+    return {"current_version": CURRENT_VERSION, "has_update": False}
+
+def run_updater_script(zip_path: str, target_dir: str):
+    """프로세스 종료 -> 파일 덮어쓰기 -> 재실행 배치 스크립트 실행"""
+    updater_bat = os.path.join(tempfile.gettempdir(), "biblescript_patch.bat")
+    extract_temp = os.path.join(tempfile.gettempdir(), "biblescript_extracted")
+
+    if os.path.exists(extract_temp):
+        shutil.rmtree(extract_temp, ignore_errors=True)
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(extract_temp)
+
+    # 교체 배치 스크립트 작성
+    bat_content = f"""@echo off
+timeout /t 2 /nobreak >nul
+taskkill /F /IM run_local.exe >nul 2>&1
+timeout /t 1 /nobreak >nul
+
+:: 새 파일들 덮어쓰기 (robocopy)
+robocopy "{extract_temp}" "{target_dir}" /E /IS /IT /NP /NJH /NJS >nul
+
+:: 프로그램 재실행
+start "" "{os.path.join(target_dir, 'run_local.exe')}"
+
+:: 임시 파일 정리
+rmdir /S /Q "{extract_temp}" >nul 2>&1
+del "{zip_path}" >nul 2>&1
+del "%~f0"
+"""
+    with open(updater_bat, "w", encoding="cp949") as f:
+        f.write(bat_content)
+
+    subprocess.Popen(["cmd.exe", "/c", updater_bat], creationflags=subprocess.CREATE_NO_WINDOW)
+    os._exit(0)
+
+@app.post("/api/update/apply")
+async def apply_update(background_tasks: BackgroundTasks):
+    """최신 패치 ZIP 다운로드 후 백그라운드에서 자동 교체"""
+    check = await check_update()
+    if not check.get("has_update") or not check.get("download_url"):
+        raise HTTPException(status_code=400, detail="업데이트 대상이 없거나 유효한 다운로드 링크가 없습니다.")
+
+    download_url = check["download_url"]
+    temp_zip = os.path.join(tempfile.gettempdir(), "biblescript_latest.zip")
+
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        resp = await client.get(download_url)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=500, detail="업데이트 파일 다운로드에 실패했습니다.")
+        with open(temp_zip, "wb") as f:
+            f.write(resp.content)
+
+    target_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else BASE_DIR
+    background_tasks.add_task(run_updater_script, temp_zip, target_dir)
+    return {"status": "success", "message": "업데이트를 시작합니다."}
 
 # 성경 한 글자/두 글자 약어 변환 맵
 BIBLE_ABBR_MAP = {
@@ -587,20 +693,35 @@ def create_ppt_stream_or_open(
         raise HTTPException(status_code=500, detail=f"{str(e)}\n{traceback.format_exc()}")
 
 
-# 정적 파일 마운트 (단일 exe 및 웹 배포 공용 방어 로직)
-FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
+# 정적 파일 마운트 (설치 폴더 _internal 및 로컬 환경 완벽 대응)
+possible_frontend = [
+    os.path.join(EXE_DIR, "_internal", "frontend", "dist"),
+    os.path.join(BASE_DIR, "_internal", "frontend", "dist"),
+    os.path.join(EXE_DIR, "frontend", "dist"),
+    os.path.join(BASE_DIR, "frontend", "dist"),
+]
+
+FRONTEND_DIST = next((p for p in possible_frontend if os.path.exists(p)), os.path.join(BASE_DIR, "frontend", "dist"))
 ASSETS_DIR = os.path.join(FRONTEND_DIST, "assets")
 
 if os.path.exists(ASSETS_DIR):
     app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
-if os.path.exists(FRONTEND_DIST):
-    @app.get("/{full_path:path}")
-    def serve_frontend(full_path: str):
-        file_path = os.path.join(FRONTEND_DIST, full_path)
-        if os.path.exists(file_path) and os.path.isfile(file_path):
-            return FileResponse(file_path)
-        index_file = os.path.join(FRONTEND_DIST, "index.html")
-        if os.path.exists(index_file):
-            return FileResponse(index_file)
-        return {"status": "running", "message": "BibleScript Pro Backend API is Active"}
+@app.get("/")
+def serve_root():
+    index_file = os.path.join(FRONTEND_DIST, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    return {"status": "running", "message": "BibleScript Pro Backend API is Active"}
+
+@app.get("/{full_path:path}")
+def serve_frontend(full_path: str):
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API 엔드포인트를 찾을 수 없습니다.")
+    file_path = os.path.join(FRONTEND_DIST, full_path)
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        return FileResponse(file_path)
+    index_file = os.path.join(FRONTEND_DIST, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    return {"status": "running", "message": "BibleScript Pro Backend API is Active"}
