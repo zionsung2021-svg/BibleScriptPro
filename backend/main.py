@@ -296,7 +296,7 @@ def shutdown_app():
 
 # ==================== 자동 업데이트 엔진 ====================
 
-CURRENT_VERSION = "0.9.0"
+CURRENT_VERSION = "1.0.0"
 GITHUB_REPO = "zionsung2021-svg/BibleScriptPro"
 
 @app.get("/api/update/check")

@@ -9,6 +9,10 @@ export default function App() {
   const [endVerse, setEndVerse] = useState("");
   const [fontName, setFontName] = useState("경기천년제목 Bold");
 
+  // 자동 업데이트 상태
+  const [updateInfo, setUpdateInfo] = useState(null);
+  const [isUpdating, setIsUpdating] = useState(false);
+
   // 여러 본문 일괄 입력 상태
   const [multiQuery, setMultiQuery] = useState("");
 
@@ -21,7 +25,7 @@ export default function App() {
   const [editVerse, setEditVerse] = useState(null);
   const [editText, setEditText] = useState("");
 
-  // 모니터 목록 상태 (듀얼 모니터 감지)
+  // 모니터 목록 상태
   const [monitors, setMonitors] = useState([]);
   const [selectedMonitor, setSelectedMonitor] = useState(1);
 
@@ -51,29 +55,30 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-// 자동 업데이트 상태 및 핸들러
-  const [updateInfo, setUpdateInfo] = useState(null);
-  const [isUpdating, setIsUpdating] = useState(false);
-
+  // 3. 업데이트 확인 로직
   useEffect(() => {
-    // 앱 실행 시 새 버전 유무 점검
     fetch("/api/update/check")
       .then((res) => res.json())
       .then((data) => {
-        if (data.has_update) {
+        if (data && data.has_update) {
           setUpdateInfo(data);
         }
       })
-      .catch(() => {});
+      .catch((err) => console.error("업데이트 확인 실패:", err));
   }, []);
 
+  // 업데이트 실행 핸들러
   const handleApplyUpdate = async () => {
     if (!updateInfo) return;
-    if (window.confirm(`새 버전(v${updateInfo.latest_version})이 감지되었습니다.\n지금 즉시 업데이트하고 프로그램을 다시 시작할까요?`)) {
+    if (
+      window.confirm(
+        `새 버전(v${updateInfo.latest_version})으로 즉시 업데이트하고 프로그램을 재시작할까요?`
+      )
+    ) {
       setIsUpdating(true);
       try {
         const res = await fetch("/api/update/apply", { method: "POST" });
-        if (!res.ok) throw new Error("업데이트 실패");
+        if (!res.ok) throw new Error("업데이트 요청 실패");
       } catch (err) {
         alert("업데이트 적용 중 오류가 발생했습니다: " + err.message);
         setIsUpdating(false);
@@ -91,7 +96,7 @@ export default function App() {
     }
   };
 
-  // 1. 단일 본문 생성 핸들러 (로컬 자동열기 + 웹 다운로드)
+  // 1. 단일 본문 생성 핸들러
   const handleGeneratePpt = async () => {
     try {
       const params = new URLSearchParams({
@@ -122,10 +127,9 @@ export default function App() {
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("application/json")) {
         await response.json().catch(() => null);
-        return; // 로컬 환경 실행 시 자동 오픈 완료
+        return;
       }
 
-      // 웹 환경 브라우저 다운로드
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -244,7 +248,8 @@ export default function App() {
       alert("오류가 발생했습니다.");
     }
   };
-const handleShutdown = async () => {
+
+  const handleShutdown = async () => {
     if (window.confirm("프로그램을 완전히 종료하시겠습니까?")) {
       try {
         await fetch("/api/shutdown", { method: "POST" });
@@ -255,14 +260,15 @@ const handleShutdown = async () => {
       document.body.innerHTML = `
         <div style="display:flex;justify-content:center;align-items:center;height:100vh;background:#0d1117;color:#fff;font-family:sans-serif;flex-direction:column;">
           <h2 style="font-size:1.8rem;margin-bottom:12px;">프로그램이 안전하게 종료되었습니다.</h2>
-          <p style="color:#8b949e;">이 브라우저 창을 닫아주세요.</p>
+          <p style="color:#8b949e;">이 창을 닫아주세요.</p>
         </div>
       `;
     }
   };
+
   return (
     <div className="min-h-screen bg-slate-900 text-gray-100 p-6 flex flex-col items-center">
-    {/* 상단 헤더 & 프로그램 종료 버튼 */}
+      {/* 상단 헤더: 타이틀 + 업데이트 버튼 + 프로그램 종료 버튼 */}
       <header className="w-full max-w-6xl flex justify-between items-center mb-6">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-2">
@@ -270,27 +276,43 @@ const handleShutdown = async () => {
           </h1>
           <p className="text-sm text-gray-400">예배용 고화질 성경 PPT 자동 생성기</p>
         </div>
-        <button
-          onClick={handleShutdown}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-300 bg-rose-950/50 hover:bg-rose-900/80 border border-rose-500/40 rounded-lg transition-all duration-200 shadow-sm cursor-pointer"
-          title="프로그램 및 백엔드 서버 종료"
-        >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+
+        <div className="flex items-center gap-2">
+          {/* 업데이트 알림 버튼 (새 버전 감지 시 노출) */}
+          {updateInfo && (
+            <button
+              onClick={handleApplyUpdate}
+              disabled={isUpdating}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-amber-300 bg-amber-950/80 hover:bg-amber-900 border border-amber-500/70 rounded-lg transition-all animate-pulse shadow-md cursor-pointer disabled:opacity-50"
+              title="새 버전을 다운받아 자동으로 적용하고 재시작합니다."
+            >
+              🚀 {isUpdating ? "업데이트 적용 중..." : `v${updateInfo.latest_version} 업데이트`}
+            </button>
+          )}
+
+          {/* 프로그램 종료 버튼 */}
+          <button
+            onClick={handleShutdown}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-300 bg-rose-950/50 hover:bg-rose-900/80 border border-rose-500/40 rounded-lg transition-all duration-200 shadow-sm cursor-pointer"
+            title="프로그램 및 백엔드 서버 종료"
           >
-            <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
-            <line x1="12" y1="2" x2="12" y2="12" />
-          </svg>
-          프로그램 종료
-        </button>
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+              <line x1="12" y1="2" x2="12" y2="12" />
+            </svg>
+            프로그램 종료
+          </button>
+        </div>
       </header>
 
       <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -387,7 +409,7 @@ const handleShutdown = async () => {
               </select>
             </div>
 
-            {/* 듀얼 모니터 감지 시 송출 모니터 선택 드롭다운 */}
+            {/* 듀얼 모니터 감지 드롭다운 */}
             {monitors.length > 1 && (
               <div className="mt-1 pt-2 border-t border-slate-800">
                 <label className="block text-xs font-semibold text-emerald-400 mb-1">
