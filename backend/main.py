@@ -11,6 +11,9 @@ import zipfile
 import shutil
 import subprocess
 import httpx
+import win32com.client
+import win32gui
+import win32con
 from typing import Optional, List
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +24,7 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
+from screeninfo import get_monitors
 
 app = FastAPI(title="BibleScript Pro API")
 
@@ -113,7 +117,64 @@ def split_verse_text(text: str, max_chars: int = 65) -> List[str]:
 
     return chunks if chunks else [text]
 
+def launch_slideshow_on_target_monitor(pptx_abs_path: str, target_monitor_id: int = 1):
+    """지정된 모니터(1-based)로 파워포인트 슬라이드 쇼 창을 이동 후 전체화면 실행"""
+    def _run():
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
 
+            monitors = list(get_monitors())
+            target_mon = None
+            if 1 <= target_monitor_id <= len(monitors):
+                target_mon = monitors[target_monitor_id - 1]
+            elif monitors:
+                target_mon = monitors[0]
+
+            ppt_app = win32com.client.Dispatch("PowerPoint.Application")
+            ppt_app.Visible = True
+
+            pres = ppt_app.Presentations.Open(pptx_abs_path)
+            settings = pres.SlideShowSettings
+            settings.ShowType = 2  # 창 모드 슬라이드 쇼
+            ssw = settings.Run()
+
+            # 슬라이드 쇼 윈도우가 생성될 때까지 잠시 대기
+            time.sleep(0.5)
+
+            if target_mon:
+                # 실행 중인 파워포인트 슬라이드 쇼 창(HWND) 핸들 찾기
+                hwnd = win32gui.FindWindow("screenClass", None)
+                if not hwnd:
+                    # 보조 클래스 이름으로 재탐색
+                    def enum_cb(h, found):
+                        txt = win32gui.GetWindowText(h)
+                        if "PowerPoint 슬라이드 쇼" in txt or "Slide Show" in txt:
+                            found.append(h)
+                    found_hwnds = []
+                    win32gui.EnumWindows(enum_cb, found_hwnds)
+                    if found_hwnds:
+                        hwnd = found_hwnds[0]
+
+                if hwnd:
+                    # Windows OS API를 통해 타겟 모니터의 실제 픽셀 좌표로 창 즉시 이동 및 크기 맞춤
+                    win32gui.SetWindowPos(
+                        hwnd,
+                        win32con.HWND_TOP,
+                        target_mon.x,
+                        target_mon.y,
+                        target_mon.width,
+                        target_mon.height,
+                        win32con.SWP_SHOWWINDOW
+                    )
+
+            pythoncom.CoUninitialize()
+        except Exception as e:
+            print(f"[SlideShow Error] {e}")
+            os.startfile(pptx_abs_path)
+
+    threading.Thread(target=_run, daemon=True).start()
+    
 # ==================== 프레젠테이션 생성 엔진 ====================
 
 def build_presentation(verses_by_version: dict, canonical_book: str, chapter: int, unit: str, font_name: str, versions: List[str]):
@@ -225,6 +286,26 @@ def get_versions():
             return {"versions": versions if versions else ["개역개정", "표준새번역", "NIV"]}
         return {"versions": ["개역개정"]}
 
+@app.get("/api/monitors")
+def get_monitor_list():
+    """연결된 모니터/디스플레이 목록 감지"""
+    try:
+        monitors = []
+        for idx, m in enumerate(get_monitors(), start=1):
+            name_suffix = " (메인 모니터)" if m.is_primary else " (확장/프로젝터)"
+            monitors.append({
+                "id": idx,
+                "name": f"모니터 {idx}{name_suffix}",
+                "width": m.width,
+                "height": m.height,
+                "is_primary": m.is_primary,
+                "x": m.x,
+                "y": m.y
+            })
+        return {"monitors": monitors}
+    except Exception as e:
+        # 감지 실패 시 기본 모니터 1개 반환
+        return {"monitors": [{"id": 1, "name": "기본 모니터", "width": 1920, "height": 1080, "is_primary": True}]}
 
 @app.get("/api/search-keyword")
 def search_keyword(
@@ -605,14 +686,16 @@ def create_multi_ppt_stream_or_open(payload: Optional[MultiPptRequest] = None, l
     )
 
 # 기존 @app.post("/api/open-ppt") 대신 아래처럼 교체:
+
 @app.api_route("/api/open-ppt", methods=["GET", "POST"])
 def create_ppt_stream_or_open(
     book: str = Query(...),
     chapter: int = Query(..., ge=1),
-    start_verse: Optional[int] = Query(None),
-    end_verse: Optional[int] = Query(None),
+    start_verse: Optional[str] = Query(None),
+    end_verse: Optional[str] = Query(None),
     versions: List[str] = Query(["개역개정"]),
-    font_name: str = Query("경기천년제목 Bold")
+    font_name: str = Query("경기천년제목 Bold"),
+    target_monitor: int = Query(1),
 ):
     try:
         s_verse = int(start_verse) if (start_verse and str(start_verse).strip().isdigit()) else None
@@ -670,10 +753,8 @@ def create_ppt_stream_or_open(
             temp_dir = tempfile.gettempdir()
             file_path = os.path.join(temp_dir, filename)
             prs.save(file_path)
-            try:
-                os.startfile(file_path)
-            except Exception:
-                pass
+            # 선택된 모니터(target_monitor)로 전체 화면 슬라이드 쇼 실행
+            launch_slideshow_on_target_monitor(os.path.abspath(file_path), target_monitor)
             return {"status": "success", "mode": "local", "file_path": file_path}
 
         # [분기 2] Render 웹 서버 (Linux 환경) -> 브라우저 스트림 다운로드

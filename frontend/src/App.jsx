@@ -41,18 +41,23 @@ export default function App() {
       .catch(console.error);
   }, []);
 
-  // 2. 모니터 목록 불러오기
+ // 모니터 목록 불러오기
   useEffect(() => {
     fetch("/api/monitors")
       .then((res) => res.json())
       .then((data) => {
-        if (data.monitors && data.monitors.length > 0) {
+        if (data && data.monitors && data.monitors.length > 0) {
           setMonitors(data.monitors);
+          // 빔프로젝터나 확장 모니터(!is_primary)가 있으면 그것을 기본 송출 모니터로 자동 지정
           const secondary = data.monitors.find((m) => !m.is_primary);
-          if (secondary) setSelectedMonitor(secondary.id);
+          if (secondary) {
+            setSelectedMonitor(secondary.id);
+          } else {
+            setSelectedMonitor(data.monitors[0].id);
+          }
         }
       })
-      .catch(() => {});
+      .catch((err) => console.error("모니터 감지 실패:", err));
   }, []);
 
   // 3. 업데이트 확인 로직
